@@ -1,0 +1,37 @@
+# Allowlist: everything is ignored unless listed below.
+*
+!*/
+!/.gitignore
+!/.gitattributes
+!/LICENSE
+!/README.md
+!/install.ps1
+!/install.sh
+!/office-read/**
+!/office-edit/**
+!/tests/**
+
+# Re-deny inside allowed paths
+__pycache__/
+*.pyc
+*.bak
+.env
+*.env
+*secret*.json
+*secret*.toml
+*secret*.yaml
+*secret*.yml
+*secret*.txt
+*credential*.json
+*credential*.toml
+*credential*.yaml
+*credential*.yml
+*credential*.txt
+*.pem
+*.key
+id_rsa*
+
+# Organisation-specific profiles stay local; only the README and template are published.
+/office-read/profiles/*.md
+!/office-read/profiles/README.md
+!/office-read/profiles/_template.md
