@@ -1,0 +1,4 @@
+openpyxl
+python-docx
+python-pptx
+pypdf
