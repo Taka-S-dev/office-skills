@@ -27,6 +27,28 @@ office-read / office-edit は汎用ツールです。「この xlsx の B3 は�
 - 社外に出す前に消すもの
 - 過去に壊れた経験
 
+## チェックルールを書く（任意）
+
+プロファイルに ```checks のコードブロックを置くと、`scripts/xlsx_check.py --profile` がそのまま
+実行します。「メインと評価シートの番号が一致しているか」「必須項目が埋まっているか」
+「開始日が終了日より前か」のような、そのファイル固有の確認を宣言的に書けます。
+
+````markdown
+```checks
+required  メイン!B3 メイン!B5             # 対象年月、作成者
+equal     メイン!C4 評価シート!C4         # 試験 No. はシート間で一致
+compare   メイン!B10 <= メイン!B11        # 開始日 <= 終了日
+regex     メイン!B7 ^[A-Z]{3}-\d{3}$      # 機種コードの形式
+in        メイン!C9 承認,却下,保留
+count     明細!A3:A200 >= 1               # 明細が 1 行以上
+no_errors                                 # #REF! などが無い
+recalculated                              # 未計算の数式が無い
+```
+````
+
+実行は `python scripts/xlsx_check.py ファイル.xlsx --profile profiles/xxx.md`。結果は PASS / FAIL /
+UNKNOWN の表で、UNKNOWN は未再計算の数式で判定できなかったものです。
+
 ## 書かなくていいこと
 
 - office2md --outline で分かること（シート一覧、サイズ、見出し一覧）。毎回読めるので不要。

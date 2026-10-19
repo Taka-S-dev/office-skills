@@ -92,6 +92,18 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/office_diff.py "報告書_v1.xlsx" "報告書_v2.xlsx" [--sheet メイン]
    ```
 
+5d. **Checking a file against known rules.** When a profile has a ```checks block, or the user
+   states rules ("the No. on メイン must match 評価シート", "開始日 is before 終了日"), run
+   `scripts/xlsx_check.py` instead of checking by eye. It reports PASS / FAIL / UNKNOWN per
+   rule with the cells and values involved; UNKNOWN means a never-recalculated formula, which
+   is a finding in itself. Rules you write ad hoc with `--rule` are worth offering to save into
+   the profile.
+
+   ```bash
+   python <skill>/scripts/xlsx_check.py "book.xlsx" --profile profiles/monthly-report.md
+   python <skill>/scripts/xlsx_check.py "book.xlsx" --rule "equal メイン!C4 評価シート!C4" --rule "required メイン!B3"
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value

@@ -66,6 +66,14 @@ def main() -> int:
         check("xlsx_deps precedents tree", "- 売上!D6 = =SUM(D2:D4)" in o and "- 売上!B2 = 120" in o, o)
         o = run(ROOT / "office-read" / "scripts" / "xlsx_deps.py", xlsx, "--cell", "売上!B2", "--dependents")
         check("xlsx_deps dependents tree", "  - 売上!D2 = =B2*C2" in o and "    - 売上!D6 = =SUM(D2:D4)" in o, o)
+        rules = d / "checks.txt"
+        rules.write_text("required 申請書!C2 申請書!D3\nequal 申請書!C2 申請書!C2\ncompare 売上!B2 < 売上!B4\n"
+                         "regex 申請書!D3 ^[A-Z]{3}-\\d{3}$\nrequired 売上!E1\ncompare 申請書!F2 > 0\nno_errors\n",
+                         encoding="utf-8")
+        o = run(ROOT / "office-read" / "scripts" / "xlsx_check.py", xlsx, "--rules", rules, expect_ok=False)
+        check("xlsx_check PASS / FAIL / UNKNOWN per rule",
+              "| PASS | required 申請書!C2 申請書!D3 |" in o and "| FAIL | required 売上!E1 | empty: 売上!E1 |" in o
+              and "| UNKNOWN | compare 申請書!F2 > 0 |" in o and "PASS: 5, FAIL: 1, UNKNOWN: 1" in o, o)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",
