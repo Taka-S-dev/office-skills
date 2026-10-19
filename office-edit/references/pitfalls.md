@@ -1,7 +1,7 @@
 # What each library silently loses or gets wrong
 
-Read the section for the format you are about to edit. Each item is something that has bitten
-people in production; the fix is usually one line if you know it beforehand.
+Read the section for the format you are about to edit. Each item has caused a real
+failure in use; the fix is usually one line if you know it beforehand.
 
 ## Excel (openpyxl)
 
