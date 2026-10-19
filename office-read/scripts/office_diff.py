@@ -35,7 +35,8 @@ def dump(path: Path, a) -> dict:
     if cls is None:
         sys.exit(f"[office_diff] unsupported extension {ext}")
     opts = argparse.Namespace(outline=False, profile=False, sheet=a.sheet, slide=None, max_rows=50000, max_cols=1000,
-                              formulas=a.formulas, cells=False, form=False, no_coords=True, json=False, out=None)
+                              formulas=a.formulas, cells=False, form=False, no_coords=True, raw=True,
+                              json=False, out=None)   # raw: compare stored values, not display strings
     return cls(path, opts).dump()
 
 

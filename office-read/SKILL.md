@@ -133,6 +133,8 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 |---|---|---|
 | xlsx | hidden / veryHidden sheets, marked `_(hidden)_` | Hidden sheets often hold the real inputs, or data the author did not mean to ship. Mention them to the user. |
 | xlsx | row numbers and column letters on every grid; `--cells` for `Sheet!C4 = value` lines | A finding without an address cannot be verified in Excel. |
+| xlsx | values as Excel displays them (15%, 1,234.5, 2026/10/01, 9:05); `--cells` adds `(raw 0.15)` when different; `--raw` for stored values | The user compares your report with the screen. Quoting 0.15 for a cell that shows 15% reads as a wrong number. Use raw values when computing. |
+| xlsx | hidden rows and columns marked `(h)`, `[hidden]` in `--cells`, listed in `--outline`; AutoFilter range noted | Hidden rows often hold internal notes, old versions or filtered-out records. They are not on the screen but they are in the file sent out. |
 | xlsx | uncached formulas shown as `=B2*C2 [uncached]` plus a WARNING; `--formulas` shows `=B2*C2  → 1200` for cached ones | By default openpyxl returns None for a never-recalculated formula, which looks like an empty cell. The script always flags it. |
 | xlsx | text in text boxes and shapes, with anchor cell; pictures listed | openpyxl ignores drawings entirely, so review notes written in a text box vanish from a plain dump. |
 | xlsx | merged ranges, cell comments, defined names, tables | Merged header cells explain odd empty cells; comments are reviewer intent. |

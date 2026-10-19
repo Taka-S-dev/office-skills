@@ -82,6 +82,16 @@ def main() -> int:
         check("office_review xlsx threaded + legacy", "| メイン!B2 | reviewer |" in o and "reply to reviewer" in o and "| メイン!C2 | taro |" in o, o)
         o = run(rv, d / "review.pptx")
         check("office_review pptx comment", "| 1 | reviewer |" in o and "タイトルを見直す" in o, o)
+        o = run(READ, xlsx, "--sheet", "申請書", "--cells")
+        check("xlsx display formats (date, percent, thousands, time) with raw shown",
+              all(x in o for x in ["申請書!C2 = 2026/10/01", "申請書!F5 = 15%  (raw 0.15)", "申請書!F6 = 1,234.5  (raw 1234.5)",
+                                   "申請書!F7 = 9:05"]), o)
+        check("xlsx hidden row and column flagged", "申請書!F9 = 非表示の値  [hidden]" in o and "申請書!H2 = 隠し列  [hidden]" in o
+              and "hidden rows 9; hidden columns H" in o, o)
+        o = run(READ, xlsx, "--sheet", "申請書")
+        check("xlsx grid marks hidden row/col", "| 9 (h) |" in o and "| H (h) |" in o, o)
+        o = run(READ, xlsx, "--outline")
+        check("xlsx outline lists hidden rows/cols", "申請書: rows 9; columns H" in o, o)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",

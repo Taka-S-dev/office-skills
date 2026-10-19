@@ -84,6 +84,84 @@ def md_table(rows: list[list[Any]], header: list[Any] | None = None) -> str:
     return "\n".join(out)
 
 
+_DATE_TOKEN = re.compile(r"yyyy|yy|mmmm|mmm|mm|m|dddd|ddd|dd|d|hh|h|ss|s|am/pm|a/p|\[h\]|ge+|e")
+
+
+def format_value(v: Any, fmt: str | None) -> Any:
+    """What Excel displays for a value with this number format, for the common formats.
+
+    A reviewer compares the dump with the screen. 0.15 shown as 15%, 2026-10-01 00:00:00 shown as
+    2026/10/01 and 1200 shown as 1,200 are the same facts in the shape the sheet presents them.
+    Unknown or exotic formats fall back to the raw value rather than guessing.
+    """
+    import datetime as _dt
+    if v is None or isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    fmt = (fmt or "General").split(";")[0]
+    fmt_clean = re.sub(r"\[[^\]]*\]|\"[^\"]*\"|\\.", "", fmt).strip()
+
+    if isinstance(v, (_dt.datetime, _dt.date, _dt.time)):
+        low = fmt_clean.lower()
+        if not _DATE_TOKEN.search(low) or "ge" in low or low.startswith("e"):
+            # General, text, or Japanese era: ISO is the least surprising fallback
+            if isinstance(v, _dt.datetime):
+                return v.strftime("%Y-%m-%d") if v.time() == _dt.time() else v.strftime("%Y-%m-%d %H:%M:%S")
+            return v.isoformat()
+        d = v if isinstance(v, (_dt.datetime, _dt.time)) else _dt.datetime.combine(v, _dt.time())
+        if isinstance(d, _dt.time):
+            d = _dt.datetime.combine(_dt.date(1900, 1, 1), d)
+        out, prev_h, i = [], False, 0
+        toks = list(_DATE_TOKEN.finditer(low))
+        for k, m in enumerate(toks):
+            out.append(low[i:m.start()])
+            t = m.group(0)
+            nxt = toks[k + 1].group(0) if k + 1 < len(toks) else ""
+            if t == "yyyy": out.append(f"{d.year:04d}")
+            elif t == "yy": out.append(f"{d.year % 100:02d}")
+            elif t == "mmmm": out.append(d.strftime("%B"))
+            elif t == "mmm": out.append(d.strftime("%b"))
+            elif t in ("mm", "m"):
+                if prev_h or nxt.startswith("s"):
+                    out.append(f"{d.minute:02d}" if t == "mm" else str(d.minute))
+                else:
+                    out.append(f"{d.month:02d}" if t == "mm" else str(d.month))
+            elif t == "dddd": out.append(d.strftime("%A"))
+            elif t == "ddd": out.append(d.strftime("%a"))
+            elif t in ("dd", "d"): out.append(f"{d.day:02d}" if t == "dd" else str(d.day))
+            elif t in ("hh", "h", "[h]"):
+                hour = d.hour if "am/pm" not in low and "a/p" not in low else (d.hour % 12 or 12)
+                out.append(f"{hour:02d}" if t == "hh" else str(hour))
+            elif t in ("ss", "s"): out.append(f"{d.second:02d}" if t == "ss" else str(d.second))
+            elif t in ("am/pm", "a/p"): out.append("AM" if d.hour < 12 else "PM")
+            prev_h = t in ("hh", "h", "[h]")
+            i = m.end()
+        out.append(low[i:])
+        return "".join(out)
+
+    if isinstance(v, (int, float)):
+        if fmt_clean in ("", "General") or "@" in fmt_clean:
+            return v if isinstance(v, int) else float(f"{v:.10g}") if abs(v) < 1e15 else v
+        if "E" in fmt_clean.upper() and "0" in fmt_clean:
+            dec = len(fmt_clean.split(".")[1].split("E")[0]) if "." in fmt_clean else 0
+            return f"{v:.{dec}E}"
+        dec = 0
+        if "." in fmt_clean:
+            dec = len(re.match(r"[0#?]*", fmt_clean.split(".", 1)[1]).group(0))
+        if "%" in fmt_clean:
+            return f"{v * 100:,.{dec}f}%" if "," in fmt_clean else f"{v * 100:.{dec}f}%"
+        body = f"{v:,.{dec}f}" if "," in fmt_clean else f"{v:.{dec}f}"
+        sym = ""
+        m = re.search(r"\[\$([^\-\]]*)", fmt) or re.search(r"([¥$€£])", fmt)
+        if m:
+            sym = m.group(1)
+        if fmt_clean.startswith("(") and v < 0:
+            body = f"({body.lstrip('-')})"
+        return f"{sym}{body}" if sym else body
+    return v
+
+
 def openpyxl_col(coord: str) -> int:
     """'C4' -> 3."""
     letters = re.match(r"[A-Z]+", coord.upper()).group(0)
@@ -136,9 +214,41 @@ class XlsxHandler(Handler):
         openpyxl = need("openpyxl", "openpyxl")
         return openpyxl.load_workbook(self.path, data_only=data_only, read_only=False)
 
+    @staticmethod
+    def _hidden(ws) -> tuple[set[int], set[int]]:
+        """Row numbers and column indexes hidden in the sheet (manually or by a filter)."""
+        rows = {r for r, dim in ws.row_dimensions.items() if dim.hidden}
+        cols: set[int] = set()
+        for letter, dim in ws.column_dimensions.items():
+            if dim.hidden:
+                lo = openpyxl_col(letter)
+                hi = dim.max if dim.max and dim.max >= lo else lo
+                cols.update(range(lo, min(hi, lo + 200) + 1))
+        return rows, cols
+
+    @staticmethod
+    def _ranges(nums: set[int], as_cols: bool = False) -> str:
+        if not nums:
+            return ""
+        s = sorted(nums)
+        parts, start, prev = [], s[0], s[0]
+        for n in s[1:] + [None]:
+            if n is None or n != prev + 1:
+                a, b = (_col_letter(start), _col_letter(prev)) if as_cols else (str(start), str(prev))
+                parts.append(a if start == prev else f"{a}-{b}")
+                if n is not None:
+                    start = n
+            if n is not None:
+                prev = n
+        return ", ".join(parts)
+
     def _sheet_info(self, ws, fws=None) -> dict:
         fws = fws if fws is not None else ws
+        hr, hc = self._hidden(ws)
         return {
+            "hidden_rows": self._ranges(hr),
+            "hidden_cols": self._ranges(hc, as_cols=True),
+            "auto_filter": ws.auto_filter.ref if ws.auto_filter and ws.auto_filter.ref else None,
             "name": ws.title,
             "state": ws.sheet_state,            # visible / hidden / veryHidden
             "dimensions": ws.dimensions,
@@ -310,6 +420,7 @@ class XlsxHandler(Handler):
             formulas_seen = 0
             formulas_cached = 0
             uncached_addrs: list[str] = []
+            hidden_rows, hidden_cols = self._hidden(ws)
 
             for r_idx, row in enumerate(ws.iter_rows(), start=1):
                 if max_rows and r_idx > max_rows:
@@ -319,12 +430,13 @@ class XlsxHandler(Handler):
                 for c_idx, cell in enumerate(row, start=1):
                     if max_cols and c_idx > max_cols:
                         break
-                    val = cell.value
+                    raw = cell.value
+                    val = raw if self.opts.raw else format_value(raw, cell.number_format)
                     fval = fws.cell(row=cell.row, column=cell.column).value
                     is_formula = isinstance(fval, str) and fval.startswith("=")
                     if is_formula:
                         formulas_seen += 1
-                        if val is None:
+                        if raw is None:
                             uncached_addrs.append(cell.coordinate)
                             val = f"{fval} [uncached]"
                         else:
@@ -335,8 +447,9 @@ class XlsxHandler(Handler):
                         comments.append({"cell": cell.coordinate, "author": cell.comment.author,
                                          "text": cell.comment.text})
                     if val is not None and val != "":
-                        cells.append({"address": cell.coordinate, "value": val,
-                                      "formula": fval if is_formula else None})
+                        cells.append({"address": cell.coordinate, "value": raw if raw is not None else val,
+                                      "display": val, "formula": fval if is_formula else None,
+                                      "hidden": cell.row in hidden_rows or cell.column in hidden_cols})
                     out_row.append(val)
                 rows.append(out_row)
 
@@ -361,6 +474,8 @@ class XlsxHandler(Handler):
                 "uncached_formulas": uncached_addrs,
                 "drawings": drawings.get(ws.title, []),
                 "form": self._form_pairs(ws, fws) if self.opts.form else [],
+                "hidden_row_set": sorted(hidden_rows),
+                "hidden_col_set": sorted(hidden_cols),
             })
             sheets.append(info)
 
@@ -396,7 +511,7 @@ class XlsxHandler(Handler):
                 return f"{fv} [uncached]", cell.coordinate
             if v is None or v == "":
                 return None, cell.coordinate
-            return v, cell.coordinate
+            return (v if self.opts.raw else format_value(v, cell.number_format)), cell.coordinate
 
         def right_edge(r: int, c: int) -> int:
             box = merged_of.get((r, c))
@@ -453,14 +568,16 @@ class XlsxHandler(Handler):
                 used.add(addr)
         return pairs
 
-    def _grid(self, rows: list[list[Any]]) -> str:
+    def _grid(self, rows: list[list[Any]], hidden_rows=(), hidden_cols=()) -> str:
         """Markdown table with Excel's column letters as header and row numbers as first column,
-        so every value can be cited as Sheet!C4."""
+        so every value can be cited as Sheet!C4. Hidden rows/columns are labelled "(h)": they
+        are in the file but not on the screen, which is exactly what a reviewer needs to know."""
         if not rows:
             return "_(empty)_"
+        hr, hc = set(hidden_rows), set(hidden_cols)
         width = max(len(r) for r in rows)
-        header = [""] + [_col_letter(i) for i in range(1, width + 1)]
-        body = [[i] + r for i, r in enumerate(rows, start=1)]
+        header = [""] + [_col_letter(i) + (" (h)" if i in hc else "") for i in range(1, width + 1)]
+        body = [[f"{i} (h)" if i in hr else i] + r for i, r in enumerate(rows, start=1)]
         return md_table(body, header=header)
 
     def to_markdown(self, data: dict) -> str:
@@ -473,6 +590,13 @@ class XlsxHandler(Handler):
                 [[s["name"], s["state"], s["dimensions"], s["max_row"], s["max_col"],
                   len(s["merged_ranges"]), s["formula_cells"], ", ".join(s["tables"])] for s in data["sheets"]],
                 header=["sheet", "state", "range", "rows", "cols", "merged", "formulas", "tables"]))
+            hidden = [f"{s['name']}: " + "; ".join(
+                ([f"rows {s['hidden_rows']}"] if s["hidden_rows"] else []) +
+                ([f"columns {s['hidden_cols']}"] if s["hidden_cols"] else []) +
+                ([f"AutoFilter {s['auto_filter']}"] if s["auto_filter"] else []))
+                for s in data["sheets"] if s["hidden_rows"] or s["hidden_cols"] or s["auto_filter"]]
+            if hidden:
+                out += ["", "Hidden rows / columns (in the file, not on the screen): " + " · ".join(hidden)]
             if any(s["formula_cells"] for s in data["sheets"]):
                 out += ["", "Sheets with formulas: pass --formulas to see them; cached values may be empty "
                         "if the file was never recalculated (office-edit/scripts/recalc.py can compute them)."]
@@ -501,6 +625,16 @@ class XlsxHandler(Handler):
             if s["merged_ranges"]:
                 out.append("Merged: " + ", ".join(s["merged_ranges"][:20])
                            + (" …" if len(s["merged_ranges"]) > 20 else ""))
+            if s["hidden_rows"] or s["hidden_cols"] or s["auto_filter"]:
+                bits = []
+                if s["hidden_rows"]:
+                    bits.append(f"hidden rows {s['hidden_rows']}")
+                if s["hidden_cols"]:
+                    bits.append(f"hidden columns {s['hidden_cols']}")
+                if s["auto_filter"]:
+                    bits.append(f"AutoFilter on {s['auto_filter']}")
+                out.append("> NOTE: " + "; ".join(bits) + ". Hidden cells are marked (h) below: present in the "
+                           "file, not on the screen. Mention them when they carry data.")
             unc = s["uncached_formulas"]
             if unc:
                 shown = ", ".join(unc[:10]) + (" …" if len(unc) > 10 else "")
@@ -521,14 +655,19 @@ class XlsxHandler(Handler):
                                "Verify a pair against the grid before relying on it.")
             elif self.opts.cells:
                 for c in s["cells"]:
-                    v = md_escape(c["value"]).replace("<br>", " / ")
-                    out.append(f"- {s['name']}!{c['address']} = {v}")
+                    v = md_escape(c["display"]).replace("<br>", " / ")
+                    extra = ""
+                    if c["formula"] is None and c["display"] != c["value"] and not isinstance(c["value"], str):
+                        extra += f"  (raw {md_escape(c['value'])})"
+                    if c["hidden"]:
+                        extra += "  [hidden]"
+                    out.append(f"- {s['name']}!{c['address']} = {v}{extra}")
                 if not s["cells"]:
                     out.append("_(empty)_")
             elif self.opts.no_coords:
                 out.append(md_table(s["rows"]))
             else:
-                out.append(self._grid(s["rows"]))
+                out.append(self._grid(s["rows"], s["hidden_row_set"], s["hidden_col_set"]))
             notes = []
             if s["truncated_rows"]:
                 notes.append(f"rows truncated at {self.opts.max_rows}; rerun with --sheet \"{s['name']}\" --max-rows 0")
@@ -1080,6 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cells", action="store_true",
                     help="xlsx: list non-empty cells as Sheet!A1 = value instead of a grid (good for forms and comparisons)")
     ap.add_argument("--no-coords", action="store_true", help="xlsx: plain table without row numbers / column letters")
+    ap.add_argument("--raw", action="store_true",
+                    help="xlsx: raw stored values instead of what Excel displays (0.15 instead of 15%%, datetimes in ISO)")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
     ap.add_argument("--out", type=Path, help="write output to this file")
     opts = ap.parse_args(argv)

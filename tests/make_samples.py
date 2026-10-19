@@ -25,6 +25,15 @@ wsf["B5"] = "氏名"; wsf["C5"] = "所属"          # sibling labels in one row
 wsf["B6"] = "山田"; wsf["C6"] = "品質保証部"
 wsf["B8"] = "備考"; wsf["B9"] = "特になし"       # value below the label
 wsf["E2"] = "合計"; wsf["F2"] = "=SUM(F3:F4)"; wsf["F3"] = 1; wsf["F4"] = 2
+# display formats and hidden cells: what the screen shows vs what is stored
+import datetime
+wsf["C2"] = datetime.datetime(2026, 10, 1); wsf["C2"].number_format = "yyyy/mm/dd"
+wsf["E5"] = "達成率"; wsf["F5"] = 0.15; wsf["F5"].number_format = "0%"
+wsf["E6"] = "金額"; wsf["F6"] = 1234.5; wsf["F6"].number_format = "#,##0.0"
+wsf["E7"] = "時刻"; wsf["F7"] = datetime.datetime(2026, 10, 1, 9, 5); wsf["F7"].number_format = "h:mm"
+wsf["E9"] = "内部メモ"; wsf["F9"] = "非表示の値"
+wsf.row_dimensions[9].hidden = True
+wsf["H2"] = "隠し列"; wsf.column_dimensions["H"].hidden = True
 ws3 = wb.create_sheet("big")
 for r in range(300):
     ws3.append([r, r * 2])
