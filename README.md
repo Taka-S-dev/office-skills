@@ -48,6 +48,9 @@ python tests/smoke_test.py
 python office-read/scripts/office2md.py 売上.xlsx --outline          # 構造だけ
 python office-read/scripts/office2md.py 売上.xlsx --sheet 明細 --max-rows 0
 python office-read/scripts/office2md.py 売上.xlsx --sheet メイン --cells   # メイン!C4 = 12 の形で 1 セル 1 行
+python office-read/scripts/office2md.py 申請書.xlsx --sheet 申請書 --form  # ラベル = 値 の対で出す
+python office-read/scripts/xlsx_deps.py 売上.xlsx --cell "メイン!D10"      # D10 が何から計算されているか
+python office-read/scripts/xlsx_deps.py 売上.xlsx --cell "メイン!B3" --dependents   # B3 を変えると何に影響するか
 python office-edit/scripts/docx_replace.py 報告書.docx --replace "2025年度=2026年度" --dry-run
 python office-edit/scripts/recalc.py 売上.xlsx                       # 数式再計算と #REF! 検出
 python office-edit/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf

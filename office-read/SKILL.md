@@ -71,6 +71,17 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    answer, the label's cell and the value's cell. Pairing is positional, so check an unexpected
    pair against the grid before quoting it.
 
+5b. **"Why is this total wrong?" / "What breaks if I change B3?"** Use `scripts/xlsx_deps.py`
+   instead of reading formulas one by one. It prints the tree of cells a formula is computed
+   from (precedents), or every formula that uses a cell (dependents), across sheets and
+   through defined names, with each node's formula and cached value.
+
+   ```bash
+   python <skill>/scripts/xlsx_deps.py "book.xlsx" --cell "メイン!D10"
+   python <skill>/scripts/xlsx_deps.py "book.xlsx" --cell "メイン!B3" --dependents
+   python <skill>/scripts/xlsx_deps.py "book.xlsx" --all      # every formula with its direct inputs
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value
