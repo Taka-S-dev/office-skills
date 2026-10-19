@@ -1404,10 +1404,45 @@ $o | ConvertTo-Json -Depth 4 -Compress
                 "to": m["to"], "cc": m["cc"], "date": date, "body": body, "attachments": attachments}
 
 
+class ArchiveHandler(Handler):
+    """zip / 7z: list what is inside. Extraction is unpack.py's job (it guards against path
+    escapes and archive bombs); listing never writes anything."""
+    name = "archive"
+
+    def _entries(self) -> list[dict]:
+        sys.path.insert(0, str(Path(__file__).parent))
+        import unpack
+        ext = self.path.suffix.lower()
+        pw = getattr(self.opts, "password", None)
+        try:
+            raw = unpack.list_zip(self.path, pw) if ext == ".zip" else unpack.list_7z(self.path, pw)
+            return [{"name": n, "size": s, "dir": d} for n, s, _, d in raw]
+        except Exception as e:
+            return [{"name": f"(cannot list: {type(e).__name__}: {str(e)[:80]})", "size": "", "dir": False}]
+
+    def outline(self) -> dict:
+        return self.dump()
+
+    def dump(self) -> dict:
+        entries = [e for e in self._entries() if not e["dir"]]
+        readable = [e for e in entries if Path(e["name"]).suffix.lower() in HANDLERS]
+        return {"file": str(self.path), "type": "archive", "entries": entries, "readable": len(readable)}
+
+    def to_markdown(self, data: dict) -> str:
+        out = md_title(data["file"])
+        out.append(f"{len(data['entries'])} file(s) inside, {data['readable']} readable with office2md")
+        out.append("")
+        out.append(md_table([[e["name"], e["size"]] for e in data["entries"]], header=["entry", "bytes"]))
+        out.append("")
+        out.append("> Extract with scripts/unpack.py ARCHIVE --out DIR (add --password if needed), then read the files.")
+        return "\n".join(out)
+
+
 XLSX_EXTS = (".xlsx", ".xlsm", ".xltx", ".xltm")
 
 HANDLERS: dict[str, type[Handler]] = {
     ".eml": EmlHandler, ".msg": MsgHandler,
+    ".zip": ArchiveHandler, ".7z": ArchiveHandler,
     ".xlsx": XlsxHandler, ".xlsm": XlsxHandler, ".xltx": XlsxHandler, ".xltm": XlsxHandler,
     ".csv": CsvHandler, ".tsv": CsvHandler,
     ".docx": DocxHandler, ".dotx": DocxHandler, ".docm": DocxHandler,
@@ -1547,6 +1582,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="mail: save attachments into DIR (then read each with office2md)")
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
+    ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
     opts = ap.parse_args(argv)
 
     if not opts.file.exists():

@@ -209,6 +209,22 @@ for n, (subj, date, body) in enumerate([
                           subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="月次報告_修正版.xlsx")
     (out / f"mail{n}.eml").write_bytes(bytes(em))
 
+# --- archives: a zip with Japanese names and a nested 7z, attached to a 4th mail ---
+import zipfile
+import py7zr
+with py7zr.SevenZipFile(out / "inner.7z", "w") as z7:
+    z7.writestr("7z の中のメモ".encode("utf-8"), "内側/メモ.txt")
+with zipfile.ZipFile(out / "添付資料.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    zf.write(out / "sample.docx", "資料/報告書.docx")
+    zf.write(out / "inner.7z", "inner.7z")
+(out / "inner.7z").unlink()
+em = EmailMessage()
+em["Subject"] = "Re: Re: Re: 月次報告の確認依頼"; em["From"] = "山田 <yamada@example.com>"; em["To"] = "reviewer@example.com"
+em["Date"] = "Sat, 11 Oct 2026 08:00:00 +0900"
+em.set_content("関連資料を圧縮して添付します。")
+em.add_attachment((out / "添付資料.zip").read_bytes(), maintype="application", subtype="zip", filename="添付資料.zip")
+(out / "mail4.eml").write_bytes(bytes(em))
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

@@ -110,9 +110,18 @@ def main() -> int:
               and (att / "月次報告_修正版.xlsx").exists(), o)
         o = run(ROOT / "office-read" / "scripts" / "mail_digest.py", d, "--threads", "--bodies", "40")
         check("mail_digest chronological thread table", "| 1 | 2026-10-06 09:00 |" in o and "| 3 | 2026-10-10 11:15 |" in o
-              and "月次報告_修正版.xlsx |" in o and "## 月次報告の確認依頼  (3 mail(s))" in o, o)
+              and "月次報告_修正版.xlsx |" in o and "## 月次報告の確認依頼  (4 mail(s))" in o, o)
         o = run(ROOT / "office-read" / "scripts" / "office_find.py", r"No\.1[12]", d, "--ext", "eml")
         check("office_find searches mail bodies", "- body line 1 | 評価シートの No.11" in o, o)
+        o = run(READ, d / "添付資料.zip")
+        check("archive listing", "資料/報告書.docx" in o and "inner.7z" in o and "2 file(s) inside" in o, o)
+        ex = d / "ex"
+        o = run(ROOT / "office-read" / "scripts" / "unpack.py", d / "添付資料.zip", "--out", ex)
+        check("unpack zip with nested 7z", (ex / "資料" / "報告書.docx").exists() and (ex / "inner" / "内側" / "メモ.txt").exists(), o)
+        o = run(ROOT / "office-read" / "scripts" / "mail_digest.py", d, "--extract", d / "att2", "--deep")
+        check("mail_digest --deep summarises attachments and archive contents",
+              "| 3 | 月次報告_修正版.xlsx | 003_月次報告_修正版.xlsx | sheets: 売上 6x7 4f" in o
+              and "資料/報告書.docx |" in o and "headings: 報告書タイトル / 1. 概要" in o, o)
         msg = ROOT / "tests" / "fixtures" / "sample.msg"
         if msg.exists():
             o = run(READ, msg, "--mail-engine", "olefile")

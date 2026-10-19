@@ -3,3 +3,4 @@ python-docx
 python-pptx
 pypdf
 olefile
+py7zr

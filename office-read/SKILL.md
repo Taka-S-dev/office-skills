@@ -140,6 +140,19 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/office2md.py "./案件フォルダ/依頼.msg" --extract-attachments ./attachments
    ```
 
+5h. **zip and 7z attachments.** Never unpack with ad-hoc code: `scripts/unpack.py ARCHIVE --out DIR`
+   restores Japanese file names (Windows zips are cp932 and come out as mojibake otherwise),
+   refuses entries that would land outside DIR, stops archive bombs, and unpacks one level of
+   nested archives. `--password` for encrypted ones (exit code 2 means the password is missing
+   or wrong; ask the user, do not guess). `office2md.py x.zip` lists the contents without
+   writing anything. For a mail folder, `mail_digest.py FOLDER --extract DIR --deep` does all
+   of this and adds one line per file saying what is inside (sheets, headings, slide titles).
+
+   ```bash
+   python <skill>/scripts/unpack.py "添付資料.zip" --out ./extracted
+   python <skill>/scripts/mail_digest.py "./案件" --extract ./att --deep --threads
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value
