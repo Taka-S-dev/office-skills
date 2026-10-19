@@ -8,7 +8,8 @@ SKILL.md 形式を読むエージェントならどれでも使え、スクリ�
 officeskill/
 ├── office-read/        読む。xlsx docx pptx pdf csv → Markdown / JSON
 │   ├── SKILL.md        エージェント向けの手順（英語）
-│   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）/ xlsx_check（ルール検査）
+│   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
+│   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -53,6 +54,7 @@ python office-read/scripts/xlsx_deps.py 売上.xlsx --cell "メイン!D10"      
 python office-read/scripts/xlsx_deps.py 売上.xlsx --cell "メイン!B3" --dependents   # B3 を変えると何に影響するか
 python office-read/scripts/office_diff.py 報告書_v1.xlsx 報告書_v2.xlsx        # 2 版の差分だけをセル番地付きで
 python office-read/scripts/xlsx_check.py 報告書.xlsx --profile office-read/profiles/report.md   # プロファイルのルールで検査
+python office-read/scripts/office_review.py 報告書.docx                      # 変更履歴とコメントを誰が・いつ・どこで付きで
 python office-edit/scripts/docx_replace.py 報告書.docx --replace "2025年度=2026年度" --dry-run
 python office-edit/scripts/recalc.py 売上.xlsx                       # 数式再計算と #REF! 検出
 python office-edit/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf

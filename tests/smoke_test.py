@@ -74,6 +74,14 @@ def main() -> int:
         check("xlsx_check PASS / FAIL / UNKNOWN per rule",
               "| PASS | required 申請書!C2 申請書!D3 |" in o and "| FAIL | required 売上!E1 | empty: 売上!E1 |" in o
               and "| UNKNOWN | compare 申請書!F2 > 0 |" in o and "PASS: 5, FAIL: 1, UNKNOWN: 1" in o, o)
+        rv = ROOT / "office-read" / "scripts" / "office_review.py"
+        o = run(rv, d / "review.docx")
+        check("office_review docx tracked changes + comment",
+              "| 2 | insert | reviewer |" in o and "| 2 | delete | reviewer |" in o and "出典を追記してください" in o, o)
+        o = run(rv, d / "review.xlsx")
+        check("office_review xlsx threaded + legacy", "| メイン!B2 | reviewer |" in o and "reply to reviewer" in o and "| メイン!C2 | taro |" in o, o)
+        o = run(rv, d / "review.pptx")
+        check("office_review pptx comment", "| 1 | reviewer |" in o and "タイトルを見直す" in o, o)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",

@@ -78,6 +78,83 @@ def inject_textbox(xlsx: Path, text: str, name: str = "注記") -> None:
 
 inject_textbox(out / "sample.xlsx", "修正済み: 単価は税抜")
 
+
+def inject_parts(pkg: Path, parts: dict[str, str], rels: dict[str, str], content_types: list[tuple[str, str]]) -> None:
+    """Add parts, relationship entries and content-type overrides to an OOXML package."""
+    import shutil
+    import zipfile
+    tmp = pkg.with_suffix(".tmp")
+    with zipfile.ZipFile(pkg) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        names = zin.namelist()
+        for n in names:
+            data = zin.read(n)
+            if n == "[Content_Types].xml":
+                adds = "".join(f'<Override PartName="/{p}" ContentType="{c}"/>' for p, c in content_types)
+                data = data.replace(b"</Types>", adds.encode() + b"</Types>")
+            elif n in rels:
+                data = data.replace(b"</Relationships>", rels[n].encode() + b"</Relationships>")
+            zout.writestr(n, data)
+        for n, body in rels.items():
+            if n not in names:
+                zout.writestr(n, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                              '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                              + body + "</Relationships>")
+        for n, body in parts.items():
+            zout.writestr(n, body)
+    shutil.move(tmp, pkg)
+
+
+# --- review fixtures: tracked changes and comments (kept separate so Excel/Word never open them) ---
+import docx
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from pptx import Presentation
+rd = docx.Document()
+rd.add_paragraph("レビュー対象の文書")
+p = rd.add_paragraph("変更前の文 ")
+ins = OxmlElement("w:ins"); ins.set(qn("w:id"), "1"); ins.set(qn("w:author"), "reviewer"); ins.set(qn("w:date"), "2026-10-18T09:00:00Z")
+r = OxmlElement("w:r"); t = OxmlElement("w:t"); t.text = "追加された文"; r.append(t); ins.append(r); p._p.append(ins)
+dl = OxmlElement("w:del"); dl.set(qn("w:id"), "2"); dl.set(qn("w:author"), "reviewer"); dl.set(qn("w:date"), "2026-10-18T09:05:00Z")
+r2 = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.text = "削除された文"; r2.append(dt); dl.append(r2); p._p.append(dl)
+p3 = rd.add_paragraph("この数値は要確認です。")
+rd.add_comment(runs=p3.runs, text="出典を追記してください", author="reviewer", initials="rv")
+rd.save(out / "review.docx")
+
+TCNS = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+rw = openpyxl.Workbook(); rws = rw.active; rws.title = "メイン"; rws["B2"] = 120; rws["C2"] = "メモ"
+rws["C2"].comment = Comment("旧式のメモ", "taro")
+rw.save(out / "review.xlsx")
+inject_parts(out / "review.xlsx",
+    parts={
+        "xl/persons/person.xml": f'<personList xmlns="{TCNS}"><person displayName="reviewer" id="{{P1}}" userId="reviewer" providerId="None"/></personList>',
+        "xl/threadedComments/threadedComment1.xml":
+            f'<ThreadedComments xmlns="{TCNS}">'
+            '<threadedComment ref="B2" dT="2026-10-18T09:00:00.00" personId="{P1}" id="{C1}"><text>単価を確認</text></threadedComment>'
+            '<threadedComment ref="B2" dT="2026-10-18T10:00:00.00" personId="{P1}" id="{C2}" parentId="{C1}"><text>確認済み</text></threadedComment>'
+            '</ThreadedComments>',
+    },
+    rels={
+        "xl/worksheets/_rels/sheet1.xml.rels": '<Relationship Id="rIdTc1" Type="http://schemas.microsoft.com/office/2017/10/relationships/threadedComment" Target="../threadedComments/threadedComment1.xml"/>',
+        "xl/_rels/workbook.xml.rels": '<Relationship Id="rIdPer1" Type="http://schemas.microsoft.com/office/2017/10/relationships/person" Target="persons/person.xml"/>',
+    },
+    content_types=[("xl/persons/person.xml", "application/vnd.ms-excel.person+xml"),
+                   ("xl/threadedComments/threadedComment1.xml", "application/vnd.ms-excel.threadedcomments+xml")])
+
+PNS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+rp = Presentation(); rs = rp.slides.add_slide(rp.slide_layouts[5]); rs.shapes.title.text = "レビュー対象"
+rp.save(out / "review.pptx")
+inject_parts(out / "review.pptx",
+    parts={
+        "ppt/commentAuthors.xml": f'<p:cmAuthorLst xmlns:p="{PNS}"><p:cmAuthor id="0" name="reviewer" initials="rv" lastIdx="1" clrIdx="0"/></p:cmAuthorLst>',
+        "ppt/comments/comment1.xml": f'<p:cmLst xmlns:p="{PNS}"><p:cm authorId="0" dt="2026-10-18T09:00:00" idx="1"><p:pos x="10" y="10"/><p:text>タイトルを見直す</p:text></p:cm></p:cmLst>',
+    },
+    rels={
+        "ppt/slides/_rels/slide1.xml.rels": '<Relationship Id="rIdCm1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments/comment1.xml"/>',
+        "ppt/_rels/presentation.xml.rels": '<Relationship Id="rIdCa1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/commentAuthors" Target="commentAuthors.xml"/>',
+    },
+    content_types=[("ppt/commentAuthors.xml", "application/vnd.openxmlformats-officedocument.presentationml.commentAuthors+xml"),
+                   ("ppt/comments/comment1.xml", "application/vnd.openxmlformats-officedocument.presentationml.comments+xml")])
+
 # --- docx ---
 import docx
 d = docx.Document()

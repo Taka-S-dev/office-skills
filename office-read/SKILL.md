@@ -104,6 +104,16 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/xlsx_check.py "book.xlsx" --rule "equal メイン!C4 評価シート!C4" --rule "required メイン!B3"
    ```
 
+5e. **"What did the reviewers change or say?"** Run `scripts/office_review.py FILE`. It lists
+   Word tracked changes (insert / delete, author, date, paragraph, text), Word comments with the
+   text they are attached to, Excel threaded comments and notes per cell, and PowerPoint
+   comments per slide. office2md hides deletions and threads, so this is the only complete view
+   of review traffic; use it before saying "no open comments".
+
+   ```bash
+   python <skill>/scripts/office_review.py "報告書.docx"
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value
