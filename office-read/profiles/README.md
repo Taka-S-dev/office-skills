@@ -27,6 +27,20 @@ office-read / office-edit は汎用ツールです。「この xlsx の B3 は�
 - 社外に出す前に消すもの
 - 過去に壊れた経験
 
+## 自動一致
+
+`## 識別` の下に `- match:` 行があると、office2md がファイルを読むたびに照合し、一致した
+プロファイルを出力の先頭に `Matched profile: ...` と出します。雛形生成時に 2 行入ります。
+
+```markdown
+- match: filename=^売上報告_\d+\.xlsx$      # ファイル名の正規表現
+- match: sheets=売上,明細                    # 列挙したシートが全部あれば一致
+- match: filename=^見積; sheets=明細         # ; で結ぶと両方必要
+```
+
+1 行が 1 条件の組で、どれか 1 行が成立すれば一致です。`match:` 行の無いプロファイルは
+自動では選ばれません。プロジェクト側の `.office-profiles/` と `--profiles-dir` も探します。
+
 ## チェックルールを書く（任意）
 
 プロファイルに ```checks のコードブロックを置くと、`scripts/xlsx_check.py --profile` がそのまま
