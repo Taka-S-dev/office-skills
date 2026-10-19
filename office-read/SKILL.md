@@ -116,6 +116,16 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/office_review.py "報告書.docx"
    ```
 
+5f. **"Which file says this, and where?"** Across a folder of files, run
+   `scripts/office_find.py PATTERN DIR...`. Each hit comes with its file and address
+   (`Sheet!C4`, `p12`, `Slide 3`, `Page 2`), so there is no need to dump files one by one.
+   `--fixed` for plain text, `--list` for file names only; unreadable files are listed as skipped
+   rather than stopping the search.
+
+   ```bash
+   python <skill>/scripts/office_find.py "XYZ-100" ./reports --ext xlsx,docx
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value

@@ -92,6 +92,16 @@ def main() -> int:
         check("xlsx grid marks hidden row/col", "| 9 (h) |" in o and "| H (h) |" in o, o)
         o = run(READ, xlsx, "--outline")
         check("xlsx outline lists hidden rows/cols", "申請書: rows 9; columns H" in o, o)
+        pdir = d / "profs"
+        pdir.mkdir()
+        (pdir / "sales.md").write_text("# 売上\n\n## 識別\n- match: sheets=売上,申請書\n", encoding="utf-8")
+        (pdir / "other.md").write_text("# other\n\n## 識別\n- match: filename=^nomatch\n", encoding="utf-8")
+        o = run(READ, xlsx, "--outline", "--profiles-dir", pdir)
+        check("profile auto-match by sheets", "Matched profile: " in o and "sales.md (by sheets)" in o and "other.md" not in o, o)
+        o = run(READ, xlsx, "--profile")
+        check("profile skeleton emits match lines", "- match: filename=^sample\\.xlsx$" in o and "- match: sheets=売上,hidden_memo,申請書,big" in o, o)
+        o = run(ROOT / "office-read" / "scripts" / "office_find.py", "XYZ-100|発表者", d, "--ext", "xlsx,pptx")
+        check("office_find reports file and address", "- 申請書!D3 | XYZ-100" in o and "- Slide 1 notes | ここは発表者ノート" in o, o)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",
