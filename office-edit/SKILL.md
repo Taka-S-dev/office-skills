@@ -66,7 +66,9 @@ rather than guessing.
    (`keep_vba`, dates as strings, missing styles in Japanese templates, no duplicate-slide API,
    insert_rows not updating formulas).
 
-5. **Verify after saving.** Re-run office-read on the output. Check:
+5. **Verify after saving.** Run office-read's `scripts/office_diff.py <backup> <result>`: it lists
+   every changed cell, paragraph or slide, so unintended changes (a dropped text box, a shifted
+   formula) show up next to the intended ones. Then check:
    - the sheets / headings / slide count match the original plus your intended change,
    - for Excel, `recalc.py` reports no `#REF!` / `#DIV/0!` / `#NAME?`,
    - nothing you did not touch disappeared (charts, images, macros).

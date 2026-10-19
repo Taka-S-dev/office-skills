@@ -82,6 +82,16 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/xlsx_deps.py "book.xlsx" --all      # every formula with its direct inputs
    ```
 
+5c. **"What changed since the last version?"** Use `scripts/office_diff.py old new`. It prints
+   only the differences with their addresses: changed, added and removed cells per sheet
+   (values and formulas separately), text-box changes, and a line diff per paragraph, slide or
+   page for docx / pptx / pdf. Exit code 1 means differences exist, 0 means identical. This is
+   also the fastest way to verify an edit: diff the backup against the result.
+
+   ```bash
+   python <skill>/scripts/office_diff.py "報告書_v1.xlsx" "報告書_v2.xlsx" [--sheet メイン]
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value

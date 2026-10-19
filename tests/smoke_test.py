@@ -89,9 +89,15 @@ def main() -> int:
         o = run(EDIT / "pptx_replace.py", pptx, "--replace", "発表者=スピーカー", "--no-backup")
         o2 = run(READ, pptx)
         check("pptx replace notes", "スピーカーノート" in o2, o + o2)
+        before = d / "before.xlsx"
+        shutil.copyfile(xlsx, before)
         o = run(EDIT / "xlsx_set.py", xlsx, "--set", "売上!A7=追加", "--set", "売上!B7=42", "--no-backup")
         o2 = run(READ, xlsx, "--sheet", "売上", "--no-coords")
         check("xlsx_set writes number and text", "| 追加 | 42 |" in o2, o + o2)
+        o = run(ROOT / "office-read" / "scripts" / "office_diff.py", before, xlsx, "--sheet", "売上", expect_ok=False)
+        check("office_diff reports added cells by address", "| A7 | added |  | 追加 |" in o and "| B7 | added |  | 42 |" in o, o)
+        o = run(ROOT / "office-read" / "scripts" / "office_diff.py", docx, docx)
+        check("office_diff identical docx", "No differences found." in o, o)
 
         have_excel = os.name == "nt" and subprocess.run(
             ["powershell", "-NoProfile", "-Command", "try{(New-Object -ComObject Excel.Application).Quit();'y'}catch{'n'}"],
