@@ -84,6 +84,15 @@ def md_table(rows: list[list[Any]], header: list[Any] | None = None) -> str:
     return "\n".join(out)
 
 
+def openpyxl_col(coord: str) -> int:
+    """'C4' -> 3."""
+    letters = re.match(r"[A-Z]+", coord.upper()).group(0)
+    n = 0
+    for ch in letters:
+        n = n * 26 + (ord(ch) - 64)
+    return n
+
+
 def etree_local(tag) -> str:
     """'{ns}name' -> 'name' for lxml tags."""
     return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
@@ -351,12 +360,98 @@ class XlsxHandler(Handler):
                 "formulas_cached": formulas_cached,
                 "uncached_formulas": uncached_addrs,
                 "drawings": drawings.get(ws.title, []),
+                "form": self._form_pairs(ws, fws) if self.opts.form else [],
             })
             sheets.append(info)
 
         if wanted and not sheets:
             sys.exit(f"[office2md] sheet '{wanted}' not found. Sheets: {values_wb.sheetnames}")
         return {"file": str(self.path), "type": "xlsx", "sheets": sheets}
+
+    # -- forms: label / value pairs -----------------------------------------------------
+    # Application forms and report headers are not tables: a label sits in one cell and its
+    # value in the next cell to the right, or in the cell below. Reading them as a grid forces
+    # the reader to pair them by eye; this does the pairing and keeps both addresses.
+
+    _LABEL_STRIP = re.compile(r"[\s:：]+$")
+
+    def _form_pairs(self, ws, fws) -> list[dict]:
+        merged_of: dict[tuple[int, int], tuple[int, int, int, int]] = {}
+        for rng in ws.merged_cells.ranges:
+            box = (rng.min_row, rng.min_col, rng.max_row, rng.max_col)
+            for r in range(rng.min_row, rng.max_row + 1):
+                for c in range(rng.min_col, rng.max_col + 1):
+                    merged_of[(r, c)] = box
+
+        def value_at(r: int, c: int):
+            if r < 1 or c < 1 or r > ws.max_row or c > ws.max_column:
+                return None, None
+            box = merged_of.get((r, c))
+            if box and (r, c) != (box[0], box[1]):
+                return None, None       # inside a merged block but not its anchor: no own value
+            cell = ws.cell(row=r, column=c)
+            v = cell.value
+            fv = fws.cell(row=r, column=c).value
+            if isinstance(fv, str) and fv.startswith("=") and v is None:
+                return f"{fv} [uncached]", cell.coordinate
+            if v is None or v == "":
+                return None, cell.coordinate
+            return v, cell.coordinate
+
+        def right_edge(r: int, c: int) -> int:
+            box = merged_of.get((r, c))
+            return box[3] if box else c
+
+        def bottom_edge(r: int, c: int) -> int:
+            box = merged_of.get((r, c))
+            return box[2] if box else r
+
+        def is_label(v) -> bool:
+            if not isinstance(v, str):
+                return False
+            t = v.strip()
+            return 0 < len(t) <= 40 and not t.startswith("=") and not re.fullmatch(r"[\d.,/\-]+", t)
+
+        pairs: list[dict] = []
+        used: set[str] = set()
+        max_rows = self.opts.max_rows or ws.max_row
+        for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, max_rows)):
+            for cell in row:
+                lv, laddr = value_at(cell.row, cell.column)
+                if lv is None or laddr in used or not is_label(lv):
+                    continue
+                label = self._LABEL_STRIP.sub("", str(lv).strip())
+                # 1. nearest non-empty cell to the right (within 4 columns, skipping empties)
+                found = None
+                c = right_edge(cell.row, cell.column) + 1
+                for _ in range(4):
+                    v, addr = value_at(cell.row, c)
+                    if v is not None:
+                        found = (v, addr, "right")
+                        break
+                    if addr is None:
+                        break
+                    c = right_edge(cell.row, c) + 1
+                below_r = bottom_edge(cell.row, cell.column) + 1
+                below_v, below_addr = value_at(below_r, cell.column)
+                # A label-like string to the right with something under this label means a
+                # header row (氏名 | 所属 over 山田 | 品質保証部): the value is below, not beside.
+                if found is not None and is_label(found[0]) and below_v is not None:
+                    found = (below_v, below_addr, "below")
+                # 2. nothing usable to the right: take the cell below, unless it is itself a
+                #    label with its own value (a terminal string like 特になし is accepted).
+                if found is None and below_v is not None:
+                    nxt, _ = value_at(below_r, right_edge(below_r, cell.column) + 1)
+                    under, _ = value_at(bottom_edge(below_r, cell.column) + 1, cell.column)
+                    if not is_label(below_v) or (nxt is None and under is None):
+                        found = (below_v, below_addr, "below")
+                if found is None:
+                    continue
+                v, addr, where = found
+                pairs.append({"label": label, "label_cell": laddr, "value": v, "value_cell": addr, "where": where})
+                used.add(laddr)
+                used.add(addr)
+        return pairs
 
     def _grid(self, rows: list[list[Any]]) -> str:
         """Markdown table with Excel's column letters as header and row numbers as first column,
@@ -414,7 +509,17 @@ class XlsxHandler(Handler):
                            "Do not judge totals or comparisons from them; run office-edit/scripts/recalc.py "
                            "on a copy, or compute by hand from the formulas shown.")
             out.append("")
-            if self.opts.cells:
+            if self.opts.form:
+                for pr in s["form"]:
+                    v = md_escape(pr["value"]).replace("<br>", " / ")
+                    out.append(f"- {pr['label']} = {v}  ({s['name']}!{pr['label_cell']} → {pr['value_cell']})")
+                if not s["form"]:
+                    out.append("_(no label/value pairs found; try --cells)_")
+                else:
+                    out.append("")
+                    out.append("> Pairing is by position (value to the right of a label, else below). "
+                               "Verify a pair against the grid before relying on it.")
+            elif self.opts.cells:
                 for c in s["cells"]:
                     v = md_escape(c["value"]).replace("<br>", " / ")
                     out.append(f"- {s['name']}!{c['address']} = {v}")
@@ -970,6 +1075,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS, help="rows per sheet, 0 = unlimited")
     ap.add_argument("--max-cols", type=int, default=DEFAULT_MAX_COLS, help="columns per sheet, 0 = unlimited")
     ap.add_argument("--formulas", action="store_true", help="xlsx: show formulas next to cached values")
+    ap.add_argument("--form", action="store_true",
+                    help="xlsx: pair labels with the value to their right or below (application forms, report headers)")
     ap.add_argument("--cells", action="store_true",
                     help="xlsx: list non-empty cells as Sheet!A1 = value instead of a grid (good for forms and comparisons)")
     ap.add_argument("--no-coords", action="store_true", help="xlsx: plain table without row numbers / column letters")

@@ -63,7 +63,13 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 
    ```bash
    python <skill>/scripts/office2md.py "path/to/file.xlsx" --sheet "メイン" --cells
+   python <skill>/scripts/office2md.py "path/to/申請書.xlsx" --sheet "申請書" --form
    ```
+
+   `--form` is for application forms and report headers, where a label sits in one cell and
+   its value to the right or below. It prints `対象機種 = XYZ-100  (申請書!B3 → D3)`: the
+   answer, the label's cell and the value's cell. Pairing is positional, so check an unexpected
+   pair against the grid before quoting it.
 
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total

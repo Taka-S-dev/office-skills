@@ -62,6 +62,11 @@ def main() -> int:
         check("xlsx text box text extracted with anchor", "| F2 | shape | 注記 | 修正済み: 単価は税抜 |" in o, o)
         o = run(READ, xlsx, "--sheet", "売上", "--cells")
         check("xlsx --cells lists Sheet!A1 = value", "- 売上!B2 = 120" in o, o)
+        o = run(READ, xlsx, "--sheet", "申請書", "--form")
+        check("xlsx --form pairs label right / merged / below / header row",
+              all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",
+                                   "- 氏名 = 山田  (申請書!B5 → B6)", "- 所属 = 品質保証部  (申請書!C5 → C6)",
+                                   "- 備考 = 特になし  (申請書!B8 → B9)"]), o)
         o = run(READ, docx)
         check("docx header + table + list", "社外秘" in o and "| 項目 | 値 |" in o and "- 箇条書き その1" in o, o)
         o = run(READ, pptx)

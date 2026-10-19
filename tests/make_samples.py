@@ -18,6 +18,13 @@ ws["A6"] = "合計"; ws["D6"] = "=SUM(D2:D4)"
 ws["A1"].comment = Comment("商品名は正式名称で", "reviewer")
 ws.merge_cells("F1:G1"); ws["F1"] = "備考\n改行あり"
 ws2 = wb.create_sheet("hidden_memo"); ws2.sheet_state = "hidden"; ws2["A1"] = "秘密のメモ"
+wsf = wb.create_sheet("申請書")          # form-like layout: label cells with values to the right / below
+wsf["B2"] = "申請日："; wsf["C2"] = "2026/10/01"
+wsf["B3"] = "対象機種"; wsf.merge_cells("B3:C3"); wsf["D3"] = "XYZ-100"
+wsf["B5"] = "氏名"; wsf["C5"] = "所属"          # sibling labels in one row
+wsf["B6"] = "山田"; wsf["C6"] = "品質保証部"
+wsf["B8"] = "備考"; wsf["B9"] = "特になし"       # value below the label
+wsf["E2"] = "合計"; wsf["F2"] = "=SUM(F3:F4)"; wsf["F3"] = 1; wsf["F4"] = 2
 ws3 = wb.create_sheet("big")
 for r in range(300):
     ws3.append([r, r * 2])
