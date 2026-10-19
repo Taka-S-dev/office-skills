@@ -75,6 +75,8 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    the cell they sit on; a reviewer's "修正済み" note is often there and nowhere else. Pictures
    cannot be read by any parser: when the outline reports images, or a review depends on what
    a figure shows, convert with office-edit's `scripts/pdf_tool.py topdf` and read the PDF.
+   For Excel it fits each sheet to one page wide by default, so a wide sheet is not split into
+   left and right halves on different pages.
 
 ## What the script surfaces and why it matters
 

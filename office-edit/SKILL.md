@@ -51,6 +51,7 @@ rather than guessing.
    | PDF: merge / split / extract pages / rotate | `python <skill>/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf`, `split a.pdf --at 4,9 --outdir parts/`, `extract a.pdf --pages 2,5-7 --out x.pdf` |
    | PDF: set bookmarks (しおり) from a text outline | `python <skill>/scripts/pdf_tool.py bookmarks a.pdf --set toc.txt --out b.pdf` (format in the script's help) |
    | Word / Excel / PowerPoint → PDF | `python <skill>/scripts/pdf_tool.py topdf report.docx` (Office COM on Windows, else LibreOffice) |
+   | Excel → PDF for visual review | default `--fit width`: each sheet one page wide, rows never split across pages; `--fit page` for small sheets; `--fit none` to keep the author's print setup when the PDF itself is the deliverable |
 
    PDF text itself cannot be edited here. When the user wants wording changed in a PDF, edit
    the source .docx/.pptx and run `topdf` again; if there is no source, say so.

@@ -232,6 +232,19 @@ try { $app.AutomationSecurity = 3
         ".xlsx": """$app = New-Object -ComObject Excel.Application
 try { $app.Visible = $false; $app.DisplayAlerts = $false; $app.AutomationSecurity = 3
   $doc = $app.Workbooks.Open($env:OFFICE_SRC, 0, $true)
+  if ($env:OFFICE_FIT -ne 'none') {
+    # Page setup is changed in memory only; the workbook is read-only and closed without saving.
+    foreach ($ws in $doc.Worksheets) {
+      if ($ws.Visible -ne -1) { continue }
+      try {
+        $ps = $ws.PageSetup
+        $ps.PrintArea = ''
+        $ps.Zoom = $false
+        $ps.FitToPagesWide = 1
+        if ($env:OFFICE_FIT -eq 'page') { $ps.FitToPagesTall = 1 } else { $ps.FitToPagesTall = $false }
+      } catch { }
+    }
+  }
   $doc.ExportAsFixedFormat(0, $env:OFFICE_OUT); $doc.Close($false) } finally { $app.Quit() }""",
     }
     scripts[".doc"] = scripts[".docm"] = scripts[".docx"]
@@ -241,7 +254,8 @@ try { $app.Visible = $false; $app.DisplayAlerts = $false; $app.AutomationSecurit
         ps = "$ErrorActionPreference = 'Stop'\n" + scripts[ext]
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
                            capture_output=True, text=True,
-                           env={**os.environ, "OFFICE_SRC": str(src), "OFFICE_OUT": str(out)})
+                           env={**os.environ, "OFFICE_SRC": str(src), "OFFICE_OUT": str(out),
+                                "OFFICE_FIT": a.fit})
         if r.returncode == 0 and out.exists():
             print(f"[pdf_tool] wrote {out} (via Office)")
             return
@@ -294,6 +308,10 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("topdf"); p.add_argument("file", type=Path); p.add_argument("--out", type=Path)
     p.add_argument("--engine", choices=["office", "soffice"])
+    p.add_argument("--fit", choices=["width", "page", "none"], default="width",
+                   help="xlsx via Office: width = each sheet one page wide, as many tall as needed (default, "
+                        "keeps rows intact for review); page = whole sheet on one page; none = author's "
+                        "print settings. Ignored by LibreOffice.")
     p.set_defaults(fn=cmd_topdf)
 
     a = ap.parse_args(argv)
