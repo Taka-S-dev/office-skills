@@ -28,7 +28,7 @@ try:
 except AttributeError:
     pass
 
-DEFAULT_EXT = ("xlsx", "xlsm", "docx", "pptx", "pdf", "csv", "tsv")
+DEFAULT_EXT = ("xlsx", "xlsm", "docx", "pptx", "pdf", "csv", "tsv", "eml", "msg")
 MAX_MB = 50
 
 
@@ -102,6 +102,15 @@ def units(path: Path) -> list[tuple[str, str]]:
     elif d["type"] == "csv":
         for i, row in enumerate(d["rows"], start=1):
             out.append((f"row {i}", " | ".join(row)))
+    elif d["type"] == "mail":
+        for k in ("subject", "from", "to", "cc", "date"):
+            if d.get(k):
+                out.append((k, str(d[k])))
+        for i, line in enumerate((d.get("body") or "").splitlines(), start=1):
+            if line.strip():
+                out.append((f"body line {i}", line))
+        for att in d.get("attachments", []):
+            out.append(("attachment", att["name"]))
     return out
 
 

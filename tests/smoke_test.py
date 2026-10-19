@@ -97,11 +97,28 @@ def main() -> int:
         (pdir / "sales.md").write_text("# 売上\n\n## 識別\n- match: sheets=売上,申請書\n", encoding="utf-8")
         (pdir / "other.md").write_text("# other\n\n## 識別\n- match: filename=^nomatch\n", encoding="utf-8")
         o = run(READ, xlsx, "--outline", "--profiles-dir", pdir)
-        check("profile auto-match by sheets", "Matched profile: " in o and "sales.md (by sheets)" in o and "other.md" not in o, o)
+        check("profile auto-match by sheets", "Matched profile: " in o and "sales.md (by sheets, given directory)" in o
+              and "confirm with the user" in o and "other.md" not in o, o)
         o = run(READ, xlsx, "--profile")
         check("profile skeleton emits match lines", "- match: filename=^sample\\.xlsx$" in o and "- match: sheets=売上,hidden_memo,申請書,big" in o, o)
         o = run(ROOT / "office-read" / "scripts" / "office_find.py", "XYZ-100|発表者", d, "--ext", "xlsx,pptx")
         check("office_find reports file and address", "- 申請書!D3 | XYZ-100" in o and "- Slide 1 notes | ここは発表者ノート" in o, o)
+        att = d / "att"
+        o = run(READ, d / "mail3.eml", "--extract-attachments", att)
+        check("eml headers, body and attachment extraction",
+              "| from | 山田 <yamada@example.com> |" in o and "D6 の数式を D2:D5 に広げました" in o
+              and (att / "月次報告_修正版.xlsx").exists(), o)
+        o = run(ROOT / "office-read" / "scripts" / "mail_digest.py", d, "--threads", "--bodies", "40")
+        check("mail_digest chronological thread table", "| 1 | 2026-10-06 09:00 |" in o and "| 3 | 2026-10-10 11:15 |" in o
+              and "月次報告_修正版.xlsx |" in o and "## 月次報告の確認依頼  (3 mail(s))" in o, o)
+        o = run(ROOT / "office-read" / "scripts" / "office_find.py", r"No\.1[12]", d, "--ext", "eml")
+        check("office_find searches mail bodies", "- body line 1 | 評価シートの No.11" in o, o)
+        msg = ROOT / "tests" / "fixtures" / "sample.msg"
+        if msg.exists():
+            o = run(READ, msg, "--mail-engine", "olefile")
+            check("msg via olefile: subject, body, attachment", "月次報告の修正依頼" in o and "No.11" in o and "見積条件.txt" in o, o)
+        else:
+            print("  [skip] msg fixture not present")
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",

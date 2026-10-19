@@ -194,6 +194,21 @@ tbl = s2.shapes.add_table(2, 2, Inches(1), Inches(2), Inches(4), Inches(1)).tabl
 tbl.cell(0, 0).text = "x"; tbl.cell(0, 1).text = "y"; tbl.cell(1, 0).text = "1"; tbl.cell(1, 1).text = "2"
 prs.save(out / "sample.pptx")
 
+# --- eml (mail kept in a folder, with an attachment) ---
+from email.message import EmailMessage
+for n, (subj, date, body) in enumerate([
+        ("月次報告の確認依頼", "Mon, 06 Oct 2026 09:00:00 +0900", "添付の月次報告を確認してください。\n合計が前月と合いません。"),
+        ("Re: 月次報告の確認依頼", "Tue, 07 Oct 2026 18:30:00 +0900", "評価シートの No.11 はメインの No.12 と不一致です。\n修正版を金曜までに送ります。"),
+        ("Re: Re: 月次報告の確認依頼", "Fri, 10 Oct 2026 11:15:00 +0900", "修正版を添付します。D6 の数式を D2:D5 に広げました。")], start=1):
+    em = EmailMessage()
+    em["Subject"] = subj; em["From"] = "山田 <yamada@example.com>"; em["To"] = "reviewer@example.com"
+    em["Cc"] = "team@example.com"; em["Date"] = date
+    em.set_content(body)
+    if n == 3:
+        em.add_attachment((out / "sample.xlsx").read_bytes(), maintype="application",
+                          subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="月次報告_修正版.xlsx")
+    (out / f"mail{n}.eml").write_bytes(bytes(em))
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

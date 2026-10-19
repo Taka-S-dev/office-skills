@@ -1,6 +1,6 @@
 # officeskill
 
-コーディングエージェントで Excel / Word / PowerPoint / PDF を読み書きするためのスキル 2 つ。
+コーディングエージェントで Excel / Word / PowerPoint / PDF、そしてフォルダに保存したメール（.eml / .msg）を読み書きするためのスキル 2 つ。
 SKILL.md 形式を読むエージェントならどれでも使え、スクリプト単体でも動く。
 外部のスキルやサービスに依存せず、MIT / BSD ライセンスの Python ライブラリだけで動く。
 
@@ -10,6 +10,7 @@ officeskill/
 │   ├── SKILL.md        エージェント向けの手順（英語）
 │   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
+│   │                   / mail_digest（フォルダ内メールの時系列）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -56,6 +57,8 @@ python office-read/scripts/office_diff.py 報告書_v1.xlsx 報告書_v2.xlsx   
 python office-read/scripts/xlsx_check.py 報告書.xlsx --profile office-read/profiles/report.md   # プロファイルのルールで検査
 python office-read/scripts/office_review.py 報告書.docx                      # 変更履歴とコメントを誰が・いつ・どこで付きで
 python office-read/scripts/office_find.py "XYZ-100" ./reports              # フォルダ内の全ファイルから場所付きで検索
+python office-read/scripts/mail_digest.py ./案件 --threads --bodies 300     # .eml / .msg を時系列に並べて経緯を掴む
+python office-read/scripts/office2md.py ./案件/依頼.msg --extract-attachments ./att   # メール 1 通と添付
 python office-edit/scripts/docx_replace.py 報告書.docx --replace "2025年度=2026年度" --dry-run
 python office-edit/scripts/recalc.py 売上.xlsx                       # 数式再計算と #REF! 検出
 python office-edit/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf
