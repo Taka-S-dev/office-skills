@@ -5,7 +5,7 @@ description: Edit, update, fill in, or create Excel, Word and PowerPoint files (
 
 # office-edit
 
-Editing an office file is easy to get 90% right and surprisingly easy to break the other 10%:
+Editing an office file is easy to get mostly right and easy to break in the remaining cases:
 formulas that show as blank to the next script, macros that vanish, a company name that was
 split across two runs and never got replaced, a tracked-changes document edited untracked.
 This skill is the checklist plus four scripts that handle the recurring cases.

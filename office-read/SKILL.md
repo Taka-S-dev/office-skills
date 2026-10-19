@@ -46,7 +46,7 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 
 2. **Default dump is capped** at 200 rows and 50 columns per sheet. The output says when it
    truncated and prints the exact command to get the rest. Raise the cap only for the sheet
-   you actually need; a 50,000-row sheet in context helps nobody.
+   you actually need; a 50,000-row sheet in context is never useful.
 
 3. **Large output goes to a file.** If a dump will clearly be long (many sheets, long report),
    pass `--out <scratch>/name.md` and then grep or read the file in parts, rather than
@@ -105,7 +105,7 @@ as tool output; the decision remains with the reader.
 
 - Say which sheets / slides / pages you looked at, and name any you skipped due to size.
 - Mention hidden sheets, hidden slides, tracked changes, and empty-text PDF pages when present,
-  even if the user did not ask. These are the things people get burned by.
+  even if the user did not ask. These are the usual causes of wrong conclusions.
 - Keep the user's cell addresses and sheet names when quoting numbers (e.g. `売上!D6`), so they
   can verify in Excel.
 - Legacy `.xls` / `.doc` / `.ppt` are not supported. The script prints a LibreOffice conversion
