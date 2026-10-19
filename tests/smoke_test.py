@@ -56,6 +56,12 @@ def main() -> int:
         check("xlsx cell comment shown", "商品名は正式名称で" in o, o)
         o = run(READ, xlsx, "--sheet", "big")
         check("xlsx truncation notice", "rows truncated at 200" in o, o)
+        o = run(READ, xlsx, "--sheet", "売上")
+        check("xlsx grid has column letters and row numbers", "|  | A | B |" in o and "| 6 | 合計 |" in o, o)
+        check("xlsx uncached formula is marked, not blank", "=SUM(D2:D4) [uncached]" in o and "WARNING: 4 formula" in o, o)
+        check("xlsx text box text extracted with anchor", "| F2 | shape | 注記 | 修正済み: 単価は税抜 |" in o, o)
+        o = run(READ, xlsx, "--sheet", "売上", "--cells")
+        check("xlsx --cells lists Sheet!A1 = value", "- 売上!B2 = 120" in o, o)
         o = run(READ, docx)
         check("docx header + table + list", "社外秘" in o and "| 項目 | 値 |" in o and "- 箇条書き その1" in o, o)
         o = run(READ, pptx)
@@ -75,7 +81,7 @@ def main() -> int:
         o2 = run(READ, pptx)
         check("pptx replace notes", "スピーカーノート" in o2, o + o2)
         o = run(EDIT / "xlsx_set.py", xlsx, "--set", "売上!A7=追加", "--set", "売上!B7=42", "--no-backup")
-        o2 = run(READ, xlsx, "--sheet", "売上")
+        o2 = run(READ, xlsx, "--sheet", "売上", "--no-coords")
         check("xlsx_set writes number and text", "| 追加 | 42 |" in o2, o + o2)
 
         have_excel = os.name == "nt" and subprocess.run(

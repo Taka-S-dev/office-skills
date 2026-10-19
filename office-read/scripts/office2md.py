@@ -7,6 +7,7 @@ Usage:
     office2md.py FILE --sheet "Sales"      one sheet (xlsx)         --slide 3   one slide (pptx)
     office2md.py FILE --max-rows 0         no row limit (default 200 rows per sheet)
     office2md.py FILE --formulas           show formulas instead of cached values (xlsx)
+    office2md.py FILE --cells              one line per non-empty cell: Sheet!C4 = value (xlsx)
     office2md.py FILE --json               structured JSON instead of Markdown
     office2md.py FILE --out result.md      write to a file instead of stdout
 
@@ -63,6 +64,11 @@ def md_table(rows: list[list[Any]], header: list[Any] | None = None) -> str:
     out = [line(header), "|" + "---|" * width]
     out += [line(r) for r in rows]
     return "\n".join(out)
+
+
+def etree_local(tag) -> str:
+    """'{ns}name' -> 'name' for lxml tags."""
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
 
 
 def need(module: str, pip_name: str):
@@ -153,26 +159,130 @@ class XlsxHandler(Handler):
             pass
         return sorted(hits)
 
+    # -- drawings (text boxes, shapes, pictures) -------------------------------------------
+    # openpyxl ignores drawings, so a text box saying "修正済み" is invisible to it. The text is
+    # plain XML in xl/drawings/, so read it from the package directly and anchor it to a cell.
+
+    _NS = {
+        "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+        "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    }
+
+    def _sheet_drawings(self) -> dict[str, list[dict]]:
+        """sheet title -> [{kind, name, anchor, text}] for every shape/picture/chart on the sheet."""
+        from lxml import etree
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+        ns = self._NS
+        result: dict[str, list[dict]] = {}
+        try:
+            z = zipfile.ZipFile(self.path)
+        except zipfile.BadZipFile:
+            return result
+        with z:
+            names = set(z.namelist())
+
+            def rels(part: str) -> dict[str, tuple[str, str]]:
+                d = part.rsplit("/", 1)[0]
+                rp = f"{d}/_rels/{part.rsplit('/', 1)[1]}.rels"
+                if rp not in names:
+                    return {}
+                root = etree.fromstring(z.read(rp), parser)
+                out = {}
+                for r in root.findall("rel:Relationship", ns):
+                    tgt = r.get("Target") or ""
+                    if tgt.startswith("/"):
+                        tgt = tgt.lstrip("/")
+                    else:
+                        base = d.split("/")
+                        for seg in tgt.split("/"):
+                            if seg == "..":
+                                base.pop()
+                            else:
+                                base.append(seg)
+                        tgt = "/".join(base)
+                    out[r.get("Id")] = (r.get("Type", "").rsplit("/", 1)[-1], tgt)
+                return out
+
+            if "xl/workbook.xml" not in names:
+                return result
+            wb_root = etree.fromstring(z.read("xl/workbook.xml"), parser)
+            wb_rels = rels("xl/workbook.xml")
+            for sh in wb_root.findall("m:sheets/m:sheet", ns):
+                title = sh.get("name")
+                rid = sh.get("{%s}id" % ns["r"])
+                sheet_part = wb_rels.get(rid, ("", ""))[1]
+                if not sheet_part:
+                    continue
+                for typ, tgt in rels(sheet_part).values():
+                    if typ != "drawing" or tgt not in names:
+                        continue
+                    droot = etree.fromstring(z.read(tgt), parser)
+                    items: list[dict] = []
+                    for anchor in droot:
+                        frm = anchor.find("xdr:from", ns)
+                        if frm is not None:
+                            col = int(frm.findtext("xdr:col", "0", ns)) + 1
+                            row = int(frm.findtext("xdr:row", "0", ns)) + 1
+                            at = f"{_col_letter(col)}{row}"
+                        else:
+                            at = "(absolute)"
+                        self._collect_shapes(anchor, at, items, ns)
+                    if items:
+                        result.setdefault(title, []).extend(items)
+        return result
+
+    def _collect_shapes(self, node, at: str, items: list[dict], ns: dict) -> None:
+        for child in node:
+            tag = etree_local(child.tag)
+            if tag == "sp" or tag == "cxnSp":
+                name = child.find("xdr:nvSpPr/xdr:cNvPr", ns) if tag == "sp" else child.find("xdr:nvCxnSpPr/xdr:cNvPr", ns)
+                paras = []
+                for p in child.findall("xdr:txBody/a:p", ns):
+                    t = "".join(x.text or "" for x in p.iter("{%s}t" % ns["a"]))
+                    if t.strip():
+                        paras.append(t.strip())
+                items.append({"kind": "shape", "name": name.get("name") if name is not None else "",
+                              "anchor": at, "text": "\n".join(paras)})
+            elif tag == "pic":
+                name = child.find("xdr:nvPicPr/xdr:cNvPr", ns)
+                items.append({"kind": "picture", "name": name.get("name") if name is not None else "",
+                              "anchor": at, "text": ""})
+            elif tag == "graphicFrame":
+                name = child.find("xdr:nvGraphicFramePr/xdr:cNvPr", ns)
+                items.append({"kind": "chart/frame", "name": name.get("name") if name is not None else "",
+                              "anchor": at, "text": ""})
+            elif tag == "grpSp":
+                self._collect_shapes(child, at, items, ns)
+
+    # -- content ------------------------------------------------------------------------
+
     def dump(self) -> dict:
         values_wb = self._open(data_only=True)
-        formula_wb = self._open(data_only=False) if self.opts.formulas else None
+        formula_wb = self._open(data_only=False)   # always: uncached formulas must never look blank
         max_rows = self.opts.max_rows
         max_cols = self.opts.max_cols
         wanted = self.opts.sheet
+        show_formulas = self.opts.formulas
+        drawings = self._sheet_drawings()
 
         sheets = []
         for ws in values_wb.worksheets:
             if wanted and ws.title != wanted:
                 continue
-            fws = formula_wb[ws.title] if formula_wb else None
+            fws = formula_wb[ws.title]
             info = self._sheet_info(ws, fws)
 
             rows: list[list[Any]] = []
+            cells: list[dict] = []          # for --cells: every non-empty cell with its address
             truncated_rows = False
             truncated_cols = ws.max_column > max_cols if max_cols else False
             comments: list[dict] = []
             formulas_seen = 0
             formulas_cached = 0
+            uncached_addrs: list[str] = []
 
             for r_idx, row in enumerate(ws.iter_rows(), start=1):
                 if max_rows and r_idx > max_rows:
@@ -183,16 +293,23 @@ class XlsxHandler(Handler):
                     if max_cols and c_idx > max_cols:
                         break
                     val = cell.value
-                    if fws is not None:
-                        fval = fws.cell(row=cell.row, column=cell.column).value
-                        if isinstance(fval, str) and fval.startswith("="):
-                            formulas_seen += 1
-                            if val is not None:
-                                formulas_cached += 1
-                            val = f"{fval}  → {val}" if val is not None else fval
+                    fval = fws.cell(row=cell.row, column=cell.column).value
+                    is_formula = isinstance(fval, str) and fval.startswith("=")
+                    if is_formula:
+                        formulas_seen += 1
+                        if val is None:
+                            uncached_addrs.append(cell.coordinate)
+                            val = f"{fval} [uncached]"
+                        else:
+                            formulas_cached += 1
+                            if show_formulas:
+                                val = f"{fval}  → {val}"
                     if cell.comment:
                         comments.append({"cell": cell.coordinate, "author": cell.comment.author,
                                          "text": cell.comment.text})
+                    if val is not None and val != "":
+                        cells.append({"address": cell.coordinate, "value": val,
+                                      "formula": fval if is_formula else None})
                     out_row.append(val)
                 rows.append(out_row)
 
@@ -208,17 +325,30 @@ class XlsxHandler(Handler):
 
             info.update({
                 "rows": rows,
+                "cells": cells,
                 "truncated_rows": truncated_rows,
                 "truncated_cols": truncated_cols,
                 "comments": comments,
                 "formulas_shown": formulas_seen,
                 "formulas_cached": formulas_cached,
+                "uncached_formulas": uncached_addrs,
+                "drawings": drawings.get(ws.title, []),
             })
             sheets.append(info)
 
         if wanted and not sheets:
             sys.exit(f"[office2md] sheet '{wanted}' not found. Sheets: {values_wb.sheetnames}")
         return {"file": str(self.path), "type": "xlsx", "sheets": sheets}
+
+    def _grid(self, rows: list[list[Any]]) -> str:
+        """Markdown table with Excel's column letters as header and row numbers as first column,
+        so every value can be cited as Sheet!C4."""
+        if not rows:
+            return "_(empty)_"
+        width = max(len(r) for r in rows)
+        header = [""] + [_col_letter(i) for i in range(1, width + 1)]
+        body = [[i] + r for i, r in enumerate(rows, start=1)]
+        return md_table(body, header=header)
 
     def to_markdown(self, data: dict) -> str:
         out = [f"# {Path(data['file']).name}", ""]
@@ -241,6 +371,9 @@ class XlsxHandler(Handler):
             extra = ([f"{dv} data validation(s)"] if dv else []) + ([f"{cf} conditional format(s)"] if cf else [])
             if objs or extra:
                 out += ["", "Objects: " + ", ".join(objs + extra) + "."]
+                if "images" in objs:
+                    out.append("> Images may contain text no parser can read. For a visual check, convert with "
+                               "office-edit/scripts/pdf_tool.py topdf and read the PDF.")
                 if objs:
                     out.append("> Saving with openpyxl may drop: " + ", ".join(objs)
                                + ". For small edits prefer Excel COM, or verify after saving (see office-edit pitfalls).")
@@ -255,27 +388,44 @@ class XlsxHandler(Handler):
             if s["merged_ranges"]:
                 out.append("Merged: " + ", ".join(s["merged_ranges"][:20])
                            + (" …" if len(s["merged_ranges"]) > 20 else ""))
+            unc = s["uncached_formulas"]
+            if unc:
+                shown = ", ".join(unc[:10]) + (" …" if len(unc) > 10 else "")
+                out.append(f"> WARNING: {len(unc)} formula cell(s) have no cached value ({shown}). "
+                           "The file was never recalculated, so those values are unknown, not blank. "
+                           "Do not judge totals or comparisons from them; run office-edit/scripts/recalc.py "
+                           "on a copy, or compute by hand from the formulas shown.")
             out.append("")
-            out.append(md_table(s["rows"]))
+            if self.opts.cells:
+                for c in s["cells"]:
+                    v = md_escape(c["value"]).replace("<br>", " / ")
+                    out.append(f"- {s['name']}!{c['address']} = {v}")
+                if not s["cells"]:
+                    out.append("_(empty)_")
+            elif self.opts.no_coords:
+                out.append(md_table(s["rows"]))
+            else:
+                out.append(self._grid(s["rows"]))
             notes = []
             if s["truncated_rows"]:
                 notes.append(f"rows truncated at {self.opts.max_rows}; rerun with --sheet \"{s['name']}\" --max-rows 0")
             if s["truncated_cols"]:
                 notes.append(f"columns truncated at {self.opts.max_cols}; use --max-cols 0")
-            if self.opts.formulas and s["formulas_shown"]:
-                n, m = s["formulas_shown"], s["formulas_cached"]
-                if m == n:
-                    notes.append(f"{n} formula cells shown as `=formula  → cached value`")
-                else:
-                    notes.append(f"{n} formula cells, only {m} have a cached value: the file was never "
-                                 "recalculated by Excel. Values shown as missing are not zero, they are unknown. "
-                                 "Run office-edit/scripts/recalc.py to compute them, or compute by hand.")
+            if self.opts.formulas and s["formulas_cached"]:
+                notes.append(f"{s['formulas_cached']} formula cells shown as `=formula  → cached value`")
             for n in notes:
                 out.append(f"\n> {n}")
             if s["comments"]:
                 out += ["", "**Cell comments**", md_table(
                     [[c["cell"], c["author"], c["text"]] for c in s["comments"]],
                     header=["cell", "author", "comment"])]
+            if s["drawings"]:
+                out += ["", "**Shapes and pictures** (text boxes are not cells; this is the only place their text appears)",
+                        md_table([[d["anchor"], d["kind"], d["name"], d["text"]] for d in s["drawings"]],
+                                 header=["anchor", "kind", "name", "text"])]
+                if any(d["kind"] == "picture" for d in s["drawings"]):
+                    out.append("> Pictures may contain text; convert with office-edit/scripts/pdf_tool.py topdf "
+                               "and read the PDF to see them.")
             out.append("")
         return "\n".join(out)
 
@@ -802,6 +952,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS, help="rows per sheet, 0 = unlimited")
     ap.add_argument("--max-cols", type=int, default=DEFAULT_MAX_COLS, help="columns per sheet, 0 = unlimited")
     ap.add_argument("--formulas", action="store_true", help="xlsx: show formulas next to cached values")
+    ap.add_argument("--cells", action="store_true",
+                    help="xlsx: list non-empty cells as Sheet!A1 = value instead of a grid (good for forms and comparisons)")
+    ap.add_argument("--no-coords", action="store_true", help="xlsx: plain table without row numbers / column letters")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")
     ap.add_argument("--out", type=Path, help="write output to this file")
     opts = ap.parse_args(argv)
