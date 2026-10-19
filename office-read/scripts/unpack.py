@@ -4,7 +4,13 @@
 Usage:
     unpack.py 添付.zip --out ./extracted                extract (nested archives too, one level)
     unpack.py 添付.7z --out ./extracted --password xxxx
+    unpack.py 添付.7z --out ./ --password a --password b    try a, then b (your own candidates)
+    unpack.py 添付.7z --out ./ --password-file pws.txt      one candidate per line, tried in order
     unpack.py 添付.zip --list                           names and sizes only, nothing written
+
+The password candidates are ones you already know (for example your team's usual archive
+passwords); they are tried in order and the one that works is used. The working password is
+never printed. This is not a guesser: no passwords are generated, only the list you give.
 
 Archives sent by mail arrive with three problems: file names from Windows are cp932 and come
 out as mojibake, an entry can be named ../../something and land outside the target folder,
@@ -149,6 +155,51 @@ def check_bomb(path: Path, entries) -> None:
         raise RuntimeError(f"compression ratio {total / comp:.0f}:1 looks like an archive bomb")
 
 
+def password_ok(path: Path, pw: str | None) -> bool:
+    """True if this password opens the archive. Reads one encrypted entry; writes nothing.
+
+    For trying a short list of candidates the user already knows (a team's usual passwords),
+    not for guessing: the caller supplies the list, nothing is generated here.
+    """
+    ext = path.suffix.lower()
+    try:
+        if ext == ".zip":
+            with zipfile.ZipFile(path) as z:
+                if pw is not None:
+                    z.setpassword(pw.encode("utf-8"))
+                enc = next((i for i in z.infolist() if not i.is_dir() and (i.flag_bits & 0x1)), None)
+                if enc is None:
+                    return pw is None or True     # not encrypted: any/no password is fine
+                with z.open(enc) as f:
+                    f.read(1)
+            return True
+        if ext == ".7z":
+            import py7zr
+            # testzip() decrypts and checks CRC: None when all entries are good, a name when one
+            # is corrupt, and it raises on a wrong password. needs_password() cannot tell a wrong
+            # password when only the content (not the header) is encrypted.
+            with py7zr.SevenZipFile(path, mode="r", password=pw) as z:
+                return z.testzip() is None
+    except Exception:
+        return False
+    return False
+
+
+def choose_password(path: Path, candidates: list[str]) -> tuple[bool, str | None, int]:
+    """Return (found?, working password or None, number tried). Tries candidates in order.
+
+    candidates may start with None ('no password') when the archive might be open. found=True
+    with password=None means an unencrypted archive opened; found=False means nothing worked.
+    The working password is returned to the caller but never printed by this module.
+    """
+    tried = 0
+    for pw in candidates:
+        tried += 1
+        if password_ok(path, pw):
+            return True, pw, tried
+    return False, None, tried
+
+
 def unpack(path: Path, out: Path, password: str | None, depth: int = 1) -> list[tuple[str, Path]]:
     ext = path.suffix.lower()
     try:
@@ -185,7 +236,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("archive", type=Path)
     ap.add_argument("--out", type=Path, help="target folder (default: next to the archive, same name)")
-    ap.add_argument("--password")
+    ap.add_argument("--password", action="append", default=[], metavar="PW",
+                    help="archive password; repeat to try several candidates in order")
+    ap.add_argument("--password-file", type=Path,
+                    help="file with one password candidate per line, tried in order")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--no-nested", action="store_true", help="leave archives inside the archive packed")
     a = ap.parse_args(argv)
@@ -194,9 +248,32 @@ def main(argv=None) -> int:
     ext = a.archive.suffix.lower()
     if ext not in ARCHIVE_EXTS:
         sys.exit(f"[unpack] unsupported: {ext} (zip and 7z only)")
+
+    # Candidate passwords: --password values, then --password-file lines. None first so an
+    # unencrypted archive opens without a password. Caller supplies the list; none are generated.
+    candidates: list[str | None] = [None]
+    candidates += list(a.password)
+    if a.password_file:
+        candidates += [ln.rstrip("\n\r") for ln in a.password_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    seen, uniq = set(), []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    password = None
+    if len(uniq) > 1:
+        found, password, tried = choose_password(a.archive, uniq)
+        if not found:
+            print(f"[unpack] none of the {len(uniq) - 1} password candidate(s) opened {a.archive.name}", file=sys.stderr)
+            return 2
+        if password is not None:
+            print(f"[unpack] opened with candidate {uniq.index(password)} of {len(uniq) - 1}", file=sys.stderr)
+    elif uniq != [None]:
+        password = uniq[-1]
+
     try:
         if a.list:
-            entries = list(list_zip(a.archive, a.password) if ext == ".zip" else list_7z(a.archive, a.password))
+            entries = list(list_zip(a.archive, password) if ext == ".zip" else list_7z(a.archive, password))
             print(f"# {a.archive.name}: {sum(1 for e in entries if not e[3])} file(s)")
             for name, size, _, is_dir in entries:
                 if not is_dir:
@@ -204,7 +281,7 @@ def main(argv=None) -> int:
             return 0
         out = a.out or a.archive.with_suffix("")
         out.mkdir(parents=True, exist_ok=True)
-        done = unpack(a.archive, out, a.password, depth=0 if a.no_nested else 1)
+        done = unpack(a.archive, out, password, depth=0 if a.no_nested else 1)
     except PermissionError as e:
         print(f"[unpack] password required or wrong: {e}", file=sys.stderr)
         return 2

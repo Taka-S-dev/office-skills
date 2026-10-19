@@ -118,6 +118,15 @@ def main() -> int:
         ex = d / "ex"
         o = run(ROOT / "office-read" / "scripts" / "unpack.py", d / "添付資料.zip", "--out", ex)
         check("unpack zip with nested 7z", (ex / "資料" / "報告書.docx").exists() and (ex / "inner" / "内側" / "メモ.txt").exists(), o)
+        import py7zr as _py7zr
+        enc = d / "enc.7z"
+        with _py7zr.SevenZipFile(enc, "w", password="pw") as z7:
+            z7.writestr("秘密の内容", "機密.txt")
+        o = run(ROOT / "office-read" / "scripts" / "unpack.py", enc, "--out", d / "enc_out",
+                "--password", "wrong", "--password", "pw", expect_ok=True)
+        check("unpack tries password candidates in order", "opened with candidate 2 of 2" in o and (d / "enc_out" / "機密.txt").exists(), o)
+        o = run(ROOT / "office-read" / "scripts" / "unpack.py", enc, "--out", d / "enc_out2", "--password", "a", "--password", "b", expect_ok=False)
+        check("unpack reports when no candidate works", "none of the 2 password candidate" in o, o)
         o = run(ROOT / "office-read" / "scripts" / "mail_digest.py", d, "--extract", d / "att2", "--deep")
         check("mail_digest --deep summarises attachments and archive contents",
               "| 3 | 月次報告_修正版.xlsx | 003_月次報告_修正版.xlsx | sheets: 売上 6x7 4f" in o

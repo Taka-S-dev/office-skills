@@ -61,12 +61,29 @@ python office-read/scripts/mail_digest.py ./案件 --threads --bodies 300     # 
 python office-read/scripts/office2md.py ./案件/依頼.msg --extract-attachments ./att   # メール 1 通と添付
 python office-read/scripts/mail_digest.py ./案件 --extract ./att --deep       # 添付と zip/7z の中身まで一覧
 python office-read/scripts/unpack.py 添付資料.zip --out ./extracted            # 文字化けせず安全に展開
+python office-read/scripts/unpack.py 添付.7z --out ./ --password-file ~/passwords.txt   # 候補を順に試す
 python office-edit/scripts/docx_replace.py 報告書.docx --replace "2025年度=2026年度" --dry-run
 python office-edit/scripts/recalc.py 売上.xlsx                       # 数式再計算と #REF! 検出
 python office-edit/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf
 ```
 
 各スクリプトは `--help` で全オプションが出る。
+
+### パスワード付きの zip / 7z
+
+チームの定番パスワードが数個あるなら、1 行 1 個のテキストに並べて `--password-file` で渡す。
+上から順に試し、最初に開けたものを使う（候補はこのファイルの中身だけ。生成や総当たりはしない）。
+開けたパスワード自体は画面に出ない。1 個だけなら `--password` を直接付ける。
+
+```
+# 例: ~/passwords.txt（リポジトリの外に置く）
+2026sales
+project-x
+```
+
+置き場所はリポジトリの**外**（ホームディレクトリなど）にする。.gitignore は `passwords.txt` や
+`*password*.txt` を止めるが、名前を変えられると守れないので、中に置かない運用が前提。
+`mail_digest.py --deep --password-file` でも同じファイルが使える。
 
 ## 拡張のしかた（よくある順）
 

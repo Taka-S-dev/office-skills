@@ -143,8 +143,10 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 5h. **zip and 7z attachments.** Never unpack with ad-hoc code: `scripts/unpack.py ARCHIVE --out DIR`
    restores Japanese file names (Windows zips are cp932 and come out as mojibake otherwise),
    refuses entries that would land outside DIR, stops archive bombs, and unpacks one level of
-   nested archives. `--password` for encrypted ones (exit code 2 means the password is missing
-   or wrong; ask the user, do not guess). `office2md.py x.zip` lists the contents without
+   nested archives. `--password` for encrypted ones, repeatable to try in order a few passwords
+   the user supplied (or `--password-file`, one per line); the one that works is used and never
+   printed, and exit code 2 means none of them worked. These are the user's own passwords to
+   provide, not something to guess or generate. `office2md.py x.zip` lists the contents without
    writing anything. For a mail folder, `mail_digest.py FOLDER --extract DIR --deep` does all
    of this and adds one line per file saying what is inside (sheets, headings, slide titles).
 

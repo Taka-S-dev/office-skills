@@ -30,6 +30,13 @@ __pycache__/
 *.pem
 *.key
 id_rsa*
+*password*.txt
+*password*.json
+*password*.toml
+*password*.yaml
+*password*.yml
+*pws*.txt
+pwlist*.txt
 
 # Organisation-specific profiles stay local; only the README and template are published.
 /office-read/profiles/*.md
