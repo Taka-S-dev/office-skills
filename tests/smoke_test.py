@@ -182,6 +182,15 @@ def main() -> int:
             pdf = docx.with_suffix(".pdf")
             check("topdf produced pdf", pdf.exists(), o)
             if pdf.exists():
+                o = run(EDIT / "pdf_headings.py", pdf, "--out", d / "toc_auto.txt")
+                check("pdf_headings finds numbered headings and writes toc.txt",
+                      "heading(s)" in o and (d / "toc_auto.txt").exists()
+                      and "1 1. 要約" in (d / "toc_auto.txt").read_text(encoding="utf-8"), o)
+                o = run(EDIT / "pdf_headings.py", pdf, "--sample")
+                check("pdf_headings --sample lists page | font | text", "| 報告書タイトル" in o, o)
+                (d / "toc_short.txt").write_text("1 1.1 詳細\n", encoding="utf-8")
+                o = run(EDIT / "pdf_headings.py", pdf, "--check", d / "toc_short.txt", expect_ok=False)
+                check("pdf_headings --check reports unlisted heading-like lines", "not in the list" in o and "1. 要約" in o, o)
                 merged = d / "m.pdf"
                 run(EDIT / "pdf_tool.py", "merge", merged, pdf, pdf)
                 toc = d / "toc.txt"

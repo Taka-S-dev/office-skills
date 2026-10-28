@@ -50,6 +50,21 @@ rather than guessing.
    | Recalculate and check formula errors | `python <skill>/scripts/recalc.py book.xlsx` |
    | PDF: merge / split / extract pages / rotate | `python <skill>/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf`, `split a.pdf --at 4,9 --outdir parts/`, `extract a.pdf --pages 2,5-7 --out x.pdf` |
    | PDF: set bookmarks (しおり) from a text outline | `python <skill>/scripts/pdf_tool.py bookmarks a.pdf --set toc.txt --out b.pdf` (format in the script's help) |
+   | PDF: build that outline from a long document | `python <skill>/scripts/pdf_headings.py a.pdf --out toc.txt` (auto: printed TOC, else built-in chapter/section patterns); `--sample` to see heading-like lines per page, then `--pattern REGEX` to apply the style you recognised to every page |
+
+   **Bookmarks for a long PDF: never build the list by reading the pages.** A 600-page PDF does
+   not fit in one reading, so a hand-built list stops partway and the job needs several rounds.
+   Instead: run `pdf_headings.py a.pdf --out toc.txt` first. If its summary reports page ranges
+   with no heading, or the list looks wrong, run `--sample` (one line per heading-like line,
+   with page and font size, for the whole document), decide what this document's headings look
+   like, and rerun with `--pattern` (a regex; named group `num` such as `1.2.3` sets nesting,
+   `--level N` forces one). Matching ignores the spaces extraction scatters inside Japanese
+   headings. Then run `pdf_headings.py a.pdf --check toc.txt`: it lists numbering gaps (第2章
+   followed by 第4章, 3.1 then 3.3), heading-like lines that are not in the list, and long
+   stretches with no entry. Decide which of those are real headings, add a `--pattern` for
+   their style, rerun with every pattern so far (they combine), and check again. Stop when the
+   check is empty or only lists things you decided to leave out, such as the title page or a
+   level below `--max-level`. Only then pass toc.txt to `pdf_tool.py bookmarks --set`.
    | Word / Excel / PowerPoint → PDF | `python <skill>/scripts/pdf_tool.py topdf report.docx` (Office COM on Windows, else LibreOffice) |
    | Excel → PDF for visual review | default `--fit width`: each sheet one page wide, rows never split across pages; `--fit page` for small sheets; `--fit none` to keep the author's print setup when the PDF itself is the deliverable |
 

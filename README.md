@@ -14,7 +14,7 @@ officeskill/
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
-│   ├── scripts/        docx_replace / pptx_replace / xlsx_set / recalc / pdf_tool
+│   ├── scripts/        docx_replace / pptx_replace / xlsx_set / recalc / pdf_tool / pdf_headings（しおり用の章立て抽出）
 │   └── references/pitfalls.md   ライブラリで壊れやすい点の一覧
 ├── tests/              smoke_test.py（全スクリプトの通し確認）
 ├── install.ps1 / install.sh
@@ -65,6 +65,8 @@ python office-read/scripts/unpack.py 添付.7z --out ./ --password-file ~/passwo
 python office-edit/scripts/docx_replace.py 報告書.docx --replace "2025年度=2026年度" --dry-run
 python office-edit/scripts/recalc.py 売上.xlsx                       # 数式再計算と #REF! 検出
 python office-edit/scripts/pdf_tool.py merge out.pdf a.pdf b.pdf
+python office-edit/scripts/pdf_headings.py 仕様書.pdf --out toc.txt   # 全ページから章・節を拾ってしおり用リストに
+python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --out 仕様書_bm.pdf
 ```
 
 各スクリプトは `--help` で全オプションが出る。
