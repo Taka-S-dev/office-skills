@@ -27,8 +27,8 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    project, if present) holds notes about recurring in-house files: which cells mean what, what
    must not be touched, the standard procedure for common requests. The script matches them
    for you: when a profile's `match:` lines fit the file, the output starts with
-   `Matched profile: <path>`; read that profile before anything else and follow it. It encodes
-   things nobody can see from the file itself. If nothing matched, skim the `# ` headings and
+   `Matched profile: <path>`; read that profile before anything else and follow it. It records
+   what the file itself does not show. If nothing matched, skim the `# ` headings and
    `## 識別` lines yourself, since older profiles may lack match lines; still no match means no
    profile exists yet, proceed normally. If the user ends up explaining
    file-specific rules to you during the task, offer to save them:
