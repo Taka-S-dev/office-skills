@@ -398,6 +398,53 @@ def main() -> int:
         check("docx: furigana written ｜base《reading》, the word stays whole",
               "SNS等を通じた｜誹謗《ひぼう》中傷への対策を進める。" in o, o)
         code = "\n".join([
+            "import xlsx_drawing as xd",
+            "def sh(name, box, text='', prst='rect', **k): return {'kind': 'shape', 'name': name, 'box': box, 'text': text, 'prst': prst, **k}",
+            "a = sh('a', (120, 55, 230, 91), '申請書提出'); b = sh('b', (270, 165, 380, 201), '受付'); c = sh('c', (120, 275, 230, 311), '差し戻し')",
+            "bands = [sh('l1', (20, 20, 580, 130)), sh('n1', (20, 20, 90, 130), '申請者'),",
+            "         sh('l2', (20, 130, 580, 240)), sh('n2', (20, 130, 90, 240), '窓口')]",
+            "lab = sh('t', (240, 120, 280, 136), 'あり', prst='', textbox=True)",
+            "l1 = {'name': 'c1', 'start': (230, 73), 'end': (270, 183), 'head': True, 'tail': False}",
+            "l2 = {'name': 'c2', 'start': (270, 201), 'end': (230, 293), 'head': True, 'tail': False}",
+            "e = lambda f, t, x, y, l: {'from': f, 'to': t, 'label': '', 'both': False, 'none': False, '_a': x, '_b': y, '_l': l}",
+            "r = {'edges': [e('申請書提出', '受付', a, b, l1), e('受付', '差し戻し', b, c, l2)]}",
+            "xd._flow_labels_and_lanes(r, [a, b, c, lab] + bands, 64.0)",
+            "assert [x['label'] for x in r['edges']] == ['あり', ''] and r['edges'][0]['label_by_position'], r",
+            "assert r['lanes'] == {'申請書提出': '申請者', '受付': '窓口'} and '_a' not in r['edges'][0], r",
+            "m = xd.mermaid_flow(r['edges'], r['lanes'])",
+            "assert 'subgraph L1[\"申請者\"]' in m and 'subgraph L2[\"窓口\"]' in m, m",
+            "print('FLOW OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("xlsx flow: a branch label beside the line, lanes from labelled bands, subgraph per lane",
+              "FLOW OK" in o.stdout, o.stdout + o.stderr)
+        code = "\n".join([
+            "import xlsx_drawing as xd",
+            "class M:",
+            "    def cell_at(self, x, y): return f'{xd._col_letter(int(x // 10) + 1)}{int(y // 10) + 1}'",
+            "cells = [{'address': 'B14', 'text': '作業'}, {'address': 'D14', 'text': '４～６月'}, {'address': 'F14', 'text': '７～９月'},",
+            "         {'address': 'B16', 'text': '設計'}]",
+            "items = [{'address': c['address'], 'text': c['text']} for c in cells]",
+            "bar = {'start': (31, 155), 'end': (60, 155), 'head': True, 'tail': True}",
+            "r = {'unexplained': [{'line': '直線 1', 'from': 'D16', 'to': 'G16', 'arrow': 'both', '_l': bar}], 'edges': []}",
+            "xd._period_bars(r, items, M(), 10.0, 10.0)",
+            "b = r['bars'][0]",
+            "assert (b['label'], b['from'], b['to'], b['from_head'], b['to_head']) == ('設計', 'D16', 'F16', '４～６月', '７～９月'), b",
+            "assert r['unexplained'] == [], r",
+            "from lxml import etree",
+            "A = 'http://schemas.openxmlformats.org/drawingml/2006/main'",
+            "geo = etree.fromstring(f'<a:prstGeom xmlns:a=\"{A}\" prst=\"borderCallout1\"><a:avLst>'",
+            "                      '<a:gd name=\"adj1\" fmla=\"val 50000\"/><a:gd name=\"adj2\" fmla=\"val 0\"/>'",
+            "                      '<a:gd name=\"adj3\" fmla=\"val 150000\"/><a:gd name=\"adj4\" fmla=\"val -50000\"/></a:avLst></a:prstGeom>')",
+            "assert xd._callout_tip('borderCallout1', geo, (0, 0, 100, 100)) == (-50.0, 150.0)",
+            "assert xd._callout_tip('wedgeRectCallout', None, (0, 0, 100, 100)) == (50 - 20.833, 50 + 62.5)",
+            "assert xd._callout_tip('rect', None, (0, 0, 100, 100)) is None",
+            "print('BARS OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("xlsx schedule bars with row label and month headings; a callout's pointer tip from its adjust values",
+              "BARS OK" in o.stdout, o.stdout + o.stderr)
+        code = "\n".join([
             "import pdf_blocks as b",
             "runs = [{'x': 110, 'y': 300 - 14 * i, 'size': 10, 'text': t} for i, t in enumerate(['操作権限', '設定・管', '理に関す', 'ること'])]",
             "runs += [{'x': 176, 'y': 300 - 14 * i, 'size': 10, 'text': t} for i, t in enumerate(['操作権限設定・', '管理は、すべて', 'の基幹業務シス', 'テムで必要。'])]",

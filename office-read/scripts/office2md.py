@@ -485,6 +485,7 @@ class XlsxHandler(Handler):
         drawings = []
         pictures = []
         smartart = []
+        by_addr = {c["address"]: str(c.get("display") or "") for c in cells}   # what a callout points at
         for sh in shapes:
             if sh["kind"] == "picture":
                 saved = ""
@@ -512,7 +513,14 @@ class XlsxHandler(Handler):
                                  "placeholder": bool(dims and dims[0] <= 2 and dims[1] <= 2)})
                 drawings.append({"kind": "picture", "name": sh["name"], "anchor": sh["from"], "text": sh["alt"]})
             elif sh["kind"] == "shape" and sh.get("text"):
-                drawings.append({"kind": "shape", "name": sh["name"], "anchor": sh["from"], "text": sh["text"]})
+                text = sh["text"]
+                if sh.get("points_at"):
+                    target = by_addr.get(sh["points_at"], "")
+                    text += f" → points at {sh['points_at']}" + (f" ({target.strip()[:60]})" if target.strip() else "")
+                drawings.append({"kind": "shape", "name": sh["name"], "anchor": sh["from"], "text": text})
+            elif sh["kind"] == "shape" and sh.get("prst") in ("leftBrace", "rightBrace", "leftBracket", "rightBracket"):
+                drawings.append({"kind": "brace", "name": sh["name"], "anchor": sh["from"],
+                                 "text": f"groups {sh['from']}:{sh['to']}"})
             elif sh["kind"] == "arrowshape" and sh.get("text"):
                 drawings.append({"kind": "arrow", "name": sh["name"], "anchor": sh["from"], "text": sh["text"]})
             elif sh["kind"] == "smartart":
@@ -527,7 +535,7 @@ class XlsxHandler(Handler):
         if any(sh["kind"] in ("connector", "arrowshape") for sh in shapes) and entry.get("metrics"):
             diagram = xd.analyse(shapes, [{"address": c["address"], "text": c["display"]} for c in cells], entry["metrics"])
             diagram["mermaid_sequence"] = xd.mermaid_sequence(diagram["sequence"]) if diagram["sequence"] else ""
-            diagram["mermaid_flow"] = xd.mermaid_flow(diagram["edges"]) if diagram["edges"] else ""
+            diagram["mermaid_flow"] = xd.mermaid_flow(diagram["edges"], diagram.get("lanes")) if diagram["edges"] else ""
             diagram["plantuml_sequence"] = xd.plantuml_sequence(diagram["sequence"]) if diagram["sequence"] else ""
             diagram["plantuml_flow"] = xd.plantuml_flow(diagram["edges"]) if diagram["edges"] else ""
         drawio_ref = ""
@@ -553,7 +561,7 @@ class XlsxHandler(Handler):
         d = s.get("diagram")
         if s.get("drawio"):
             out += ["", f"Editable copy of this sheet's drawing (same positions, lines and arrows): {s['drawio']}"]
-        if d and (d["sequence"] or d["edges"] or d["unexplained"]):
+        if d and (d["sequence"] or d["edges"] or d["unexplained"] or d.get("bars")):
             out += ["", "**Diagram** (reconstructed from the shapes' positions; verify against the rendered sheet)"]
             seq = d["sequence"]
             uml = getattr(self.opts, "uml", "mermaid") or "mermaid"
@@ -605,7 +613,19 @@ class XlsxHandler(Handler):
                 for e in d["edges"]:
                     arrow = "↔" if e["both"] else "—" if e["none"] else "→"
                     label = f" [{md_escape(e['label'])}]" if e.get("label") else ""
-                    out.append(f"- {md_escape(e['from'])} {arrow} {md_escape(e['to'])}{label}  ({e['how']}, '{md_escape(e['line'])}')")
+                    if e.get("label_by_position"):
+                        label += " (label: nearest text)"
+                    lanes = d.get("lanes") or {}
+                    lane = lambda n: f"[{md_escape(lanes[n])}] " if n in lanes else ""  # noqa: E731
+                    out.append(f"- {lane(e['from'])}{md_escape(e['from'])} {arrow} {lane(e['to'])}{md_escape(e['to'])}{label}"
+                               f"  ({e['how']}, '{md_escape(e['line'])}')")
+            if d.get("bars"):
+                out += ["", f"Period bars, read by position ({len(d['bars'])}): a line drawn across columns of a row"]
+                for b in d["bars"]:
+                    span = (f" ({md_escape(b['from_head'])} → {md_escape(b['to_head'])})"
+                            if b["from_head"] or b["to_head"] else "")
+                    out.append(f"- row {b['row']} {md_escape(b['label']) or '(no label)'}: {b['from']} to {b['to']}{span}"
+                               f"  ('{md_escape(b['line'])}', arrowhead: {b['arrow']})")
             if d["unexplained"]:
                 out += ["", f"Lines not interpreted ({len(d['unexplained'])}): "
                         + "; ".join(f"'{md_escape(u['line'])}' {u['from']}→{u['to']} (arrowhead: {u['arrow']})"

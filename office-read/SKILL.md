@@ -118,7 +118,11 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    from. Recognised: messages, dashed replies, self messages (also when drawn as three lines),
    activation bars, alt / opt / loop / par / critical / break frames with else and [conditions],
    and notes; each only from an unambiguous cue, anything else is listed as not interpreted.
-   Flowcharts come out as connections. The drawing is also written to `<stem>.drawio` as an
+   Flowcharts come out as connections, with a branch label written in a text box beside a line
+   attached to the nearest line, and lanes drawn as long labelled bands as mermaid subgraphs
+   (both marked as placed by position). A schedule drawn as bars across a grid comes out as
+   period bars: the row's label and the column headings each bar spans. A callout names the
+   cell its pointer ends at, and a brace the range it spans. The drawing is also written to `<stem>.drawio` as an
    editable copy that keeps every position, line, dash and arrowhead, which is the faithful
    version when the reconstruction is in doubt. Charts carry their series values, input rules their
    choices, pictures their size and alt text. Each sheet is rendered to its own PDF

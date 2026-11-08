@@ -288,13 +288,15 @@ def xlsx_visuals(data: dict, sheet_pdf: dict[str, str]) -> list[tuple[str, str, 
         pdf = sheet_pdf.get(name, "")
         where = f" in {pdf}" if pdf else ""
         d = s.get("diagram")
-        if d and (d["sequence"] or d["edges"] or d["unexplained"]):
+        if d and (d["sequence"] or d["edges"] or d["unexplained"] or d.get("bars")):
             what = []
             if d["sequence"]:
                 what.append(f"{len(d['sequence']['messages'])} message(s) between "
                             f"{len(d['sequence']['participants'])} participant(s)")
             if d["edges"]:
                 what.append(f"{len(d['edges'])} connection(s)")
+            if d.get("bars"):
+                what.append(f"{len(d['bars'])} period bar(s) placed by position")
             if d["unexplained"]:
                 what.append(f"{len(d['unexplained'])} line(s) not interpreted")
             items.append((f"{name}#diagram", fingerprint(d),

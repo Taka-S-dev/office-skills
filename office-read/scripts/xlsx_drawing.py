@@ -165,6 +165,35 @@ class Metrics:
         return f"{col_letter(col)}{row}"
 
 
+_WEDGE_DEFAULT = {"wedgeRectCallout": (-20833, 62500), "wedgeRoundRectCallout": (-20833, 62500),
+                  "wedgeEllipseCallout": (-20833, 62500), "cloudCallout": (-20833, 62500)}
+
+
+def _callout_tip(prst: str, geo, box) -> tuple[float, float] | None:
+    """Where a callout's pointer ends, from its adjust values: the cell a note is about.
+    Wedge callouts give the tip relative to the centre (adj1, adj2 in 1/100000 of width and
+    height); line callouts (borderCallout1-3, callout1-3, accent...) list their points as
+    (y, x) pairs from the top-left corner, the last pair being the tip."""
+    m = re.fullmatch(r"(?:accent|border|accentBorder)?[cC]allout([123])", prst)
+    if prst not in _WEDGE_DEFAULT and not m:
+        return None
+    adj = {}
+    if geo is not None:
+        for gd in geo.iter(_q("a", "gd")):
+            v = re.fullmatch(r"val\s+(-?\d{1,7})", gd.get("fmla") or "")
+            if v:
+                adj[gd.get("name") or ""] = int(v.group(1))
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    if prst in _WEDGE_DEFAULT:
+        dx, dy = adj.get("adj1", _WEDGE_DEFAULT[prst][0]), adj.get("adj2", _WEDGE_DEFAULT[prst][1])
+        return (x0 + w / 2 + w * dx / 100000, y0 + h / 2 + h * dy / 100000)
+    n = (int(m.group(1)) + 1) * 2          # callout1 has 2 points (adj1-4), callout3 has 4 (adj1-8)
+    if f"adj{n - 1}" not in adj or f"adj{n}" not in adj:
+        return None
+    return (x0 + w * adj[f"adj{n}"] / 100000, y0 + h * adj[f"adj{n - 1}"] / 100000)
+
+
 def _col_index(letters: str) -> int:
     n = 0
     for ch in letters.upper():
@@ -452,6 +481,9 @@ def _walk(el, box, m: Metrics, out: list[dict], depth: int, group_id: str | None
             s["st"] = s["en"] = None
         else:
             s["kind"] = "shape"
+            tip = _callout_tip(prst or "", geo, box)
+            if tip:
+                s["points_at"] = m.cell_at(*tip)
         out.append(s)
     elif tag == "cxnSp":
         s = base(X("nvCxnSpPr") + "/" + X("cNvPr"))
@@ -870,12 +902,121 @@ def analyse(shapes: list[dict], cells: list[dict], m: Metrics) -> dict:
             result["edges"].append({"from": a["text"] or a["name"], "to": b["text"] or b["name"],
                                     "both": l["head"] and l["tail"], "none": not l["head"] and not l["tail"],
                                     "how": ka if ka == kb else f"{ka}/{kb}", "line": l["name"],
-                                    "label": l.get("text", "")})
+                                    "label": l.get("text", ""), "_a": a, "_b": b, "_l": l})
         else:
             result["unexplained"].append({"line": l["name"], "from": m.cell_at(*l["start"]), "to": m.cell_at(*l["end"]),
                                           "arrow": "both" if l["head"] and l["tail"] else "start" if l["head"]
-                                          else "end" if l["tail"] else "none"})
+                                          else "end" if l["tail"] else "none", "_l": l})
+    _period_bars(result, cell_items, m, col, row)
+    for u in result["unexplained"]:
+        u.pop("_l", None)
+    _flow_labels_and_lanes(result, shapes, col)
     return result
+
+
+def _period_bars(result: dict, cell_items: list[dict], m, col: float, row: float) -> None:
+    """A schedule drawn as bars: a horizontal line or arrow lying inside one row of a grid and
+    crossing columns, connected to nothing. The bar is the content of that row (the period of a
+    task), so it is reported with the row's label and the column headings it spans."""
+    def rc(addr):
+        mm = re.match(r"([A-Z]+)(\d+)$", addr or "")
+        return (int(mm.group(2)), _col_index(mm.group(1))) if mm else (None, None)
+    by_cell = {rc(c["address"]): c["text"] for c in cell_items}
+    bars, rest = [], []
+    for u in result["unexplained"]:
+        l = u["_l"]
+        dx, dy = abs(l["end"][0] - l["start"][0]), abs(l["end"][1] - l["start"][1])
+        (r1, c1), (r2, c2) = rc(u["from"]), rc(u["to"])
+        if r1 is None or r2 is None or r1 != r2 or dy > 0.35 * row or dx < 1.5 * col:
+            rest.append(u)
+            continue
+        lo, hi = sorted((l["start"], l["end"]))
+        c_lo, c_hi = sorted((c1, c2))
+        # an end on a column's left edge stops before that column
+        _, edge_c = rc(m.cell_at(hi[0] - 0.05 * col, hi[1]))
+        c_hi = max(c_lo, edge_c or c_hi)
+        label = next((by_cell[(r1, c)] for c in range(c_lo - 1, 0, -1) if (r1, c) in by_cell), "")
+
+        # the heading row: the nearest row above with text over the bar's columns; a heading merged
+        # over two columns (J14:K15 １～３月) sits in its first column, so look left within the row
+        head_rows = [r for (r, cc) in by_cell if r < r1 and c_lo - 1 <= cc <= c_hi]
+        hr = max(head_rows) if head_rows else None
+
+        def heading(c):
+            if hr is None:
+                return ""
+            left = [cc for (r, cc) in by_cell if r == hr and c_lo - 1 <= cc <= c]
+            return by_cell[(hr, max(left))] if left else ""
+        bars.append({"line": u["line"], "row": r1, "label": label, "from": f"{_col_letter(c_lo)}{r1}",
+                     "to": f"{_col_letter(c_hi)}{r1}", "from_head": heading(c_lo), "to_head": heading(c_hi),
+                     "arrow": u["arrow"]})
+    if bars:
+        result["bars"] = sorted(bars, key=lambda b: b["row"])
+        result["unexplained"] = rest
+
+
+def _flow_labels_and_lanes(result: dict, shapes: list[dict], col: float) -> None:
+    """Two things flowcharts drawn by hand rely on: a branch label ("あり", "Yes") written in a text
+    box beside the line instead of on it, and lanes drawn as long empty rectangles with their name
+    in a box at one end. Both are placed by position and marked so."""
+    edges = result["edges"]
+    ends = {id(e["_a"]) for e in edges} | {id(e["_b"]) for e in edges}
+    free = [t for t in shapes if t["kind"] == "shape" and t.get("text") and id(t) not in ends
+            and len(t["text"]) <= 20 and (t.get("textbox") or not t.get("prst") or t.get("line") == "none")]
+    # nearest pairs first: a label sits closest to the line it belongs to, so a line visited
+    # earlier must not take a label that lies right at another line's start
+    pairs = []
+    for i, e in enumerate(edges):
+        if e["label"]:
+            continue
+        l = e["_l"]
+        start = l["end"] if (l["head"] and not l["tail"]) else l["start"]
+        mid = ((l["start"][0] + l["end"][0]) / 2, (l["start"][1] + l["end"][1]) / 2)
+        for j, t in enumerate(free):
+            d = min(_dist_to_box(start[0], start[1], t["box"]), _dist_to_box(mid[0], mid[1], t["box"]))
+            if d < 1.2 * col:
+                pairs.append((d, i, j))
+    done_e: set[int] = set()
+    done_t: set[int] = set()
+    for d, i, j in sorted(pairs):
+        if i in done_e or j in done_t:
+            continue
+        edges[i]["label"], edges[i]["label_by_position"] = free[j]["text"], True
+        done_e.add(i)
+        done_t.add(j)
+
+    # lanes: an empty rectangle much longer than it is wide, holding some of the flow's boxes
+    nodes = [x for e in edges for x in (e["_a"], e["_b"])]
+    bands = []
+    for r in shapes:
+        if r["kind"] != "shape" or r.get("text") or r.get("prst") not in ("rect", "custom", ""):
+            continue
+        w, h = r["box"][2] - r["box"][0], r["box"][3] - r["box"][1]
+        if w <= 0 or h <= 0 or not (w >= 2.5 * h or h >= 2.5 * w):
+            continue
+        inside = [n for n in nodes if r["box"][0] <= (n["box"][0] + n["box"][2]) / 2 <= r["box"][2]
+                  and r["box"][1] <= (n["box"][1] + n["box"][3]) / 2 <= r["box"][3]]
+        if not inside:
+            continue
+        horizontal = w >= h
+        names = [t for t in shapes if t["kind"] == "shape" and t.get("text") and id(t) not in ends
+                 and t["box"][0] >= r["box"][0] - 2 and t["box"][2] <= r["box"][2] + 2
+                 and t["box"][1] >= r["box"][1] - 2 and t["box"][3] <= r["box"][3] + 2
+                 and (t["box"][0] - r["box"][0] <= 0.25 * w if horizontal else t["box"][1] - r["box"][1] <= 0.25 * h)]
+        if names:
+            names.sort(key=lambda t: (t["box"][0], t["box"][1]) if horizontal else (t["box"][1], t["box"][0]))
+            bands.append({"box": r["box"], "name": names[0]["text"], "area": w * h})
+    lane_of: dict[str, str] = {}
+    for n in nodes:
+        cx, cy = (n["box"][0] + n["box"][2]) / 2, (n["box"][1] + n["box"][3]) / 2
+        hits = [b for b in bands if b["box"][0] <= cx <= b["box"][2] and b["box"][1] <= cy <= b["box"][3]]
+        if hits:
+            lane_of[n["text"] or n["name"]] = min(hits, key=lambda b: b["area"])["name"]
+    if lane_of:
+        result["lanes"] = lane_of
+    for e in edges:
+        for k in ("_a", "_b", "_l"):
+            e.pop(k, None)
 
 
 def _sequence(shapes, lines, vert, texts, cell_items, m, col, row, tol, used) -> dict | None:
@@ -1210,16 +1351,28 @@ def plantuml_sequence(seq: dict) -> str:
     return "\n".join(out)
 
 
-def mermaid_flow(edges: list[dict]) -> str:
+def mermaid_flow(edges: list[dict], lanes: dict[str, str] | None = None) -> str:
     def safe(s: str) -> str:
         return re.sub(r'["`\[\]\n\r]', " ", s or "").strip()[:60] or "?"
     ids: dict[str, str] = {}
     lines = ["flowchart TD"]
+    order: list[str] = []
     for e in edges:
         for k in ("from", "to"):
             if e[k] not in ids:
                 ids[e[k]] = f"N{len(ids) + 1}"
-                lines.append(f'    {ids[e[k]]}["{safe(e[k])}"]')
+                order.append(e[k])
+    lanes = lanes or {}
+    groups: dict[str, list[str]] = {}
+    for name in order:
+        groups.setdefault(lanes.get(name, ""), []).append(name)
+    for k, (lane, names) in enumerate(groups.items(), start=1):
+        if lane:
+            lines.append(f'    subgraph L{k}["{safe(lane)}"]')
+        for name in names:
+            lines.append(f'    {"    " if lane else ""}{ids[name]}["{safe(name)}"]')
+        if lane:
+            lines.append("    end")
     for e in edges:
         arrow = "<-->" if e["both"] else "---" if e["none"] else "-->"
         label = f"|{safe(e['label'])}|" if e.get("label") else ""
