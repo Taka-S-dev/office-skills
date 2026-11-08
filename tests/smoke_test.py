@@ -151,6 +151,22 @@ def main() -> int:
               and "| K3:K5 | list: 必須, 任意 |" in o and "| L3:L5 | list: 1, 2, 3 (from $N$2:$N$4) |" in o, o)
         o = run(READ, dg, "--sheet", "グラフ")
         check("xlsx chart series and picture size", "売上: 1月=120, 2月=80, 3月=150" in o and "40x20" in o, o)
+        xc = ROOT / "office-read" / "scripts" / "md_crosscheck.py"
+        o = run(xc, dg, "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("xlsx cross-check: nothing missing, 4 visual checks open",
+              "0 missing from the Markdown" in rv and "Visual checks: 0 of 4 confirmed" in rv and "NEEDS REVIEW" in rv, rv)
+        md = (d / "xx" / "diagram.md").read_text(encoding="utf-8")
+        (d / "xx" / "diagram.md").write_text(md.replace("日付 [B4:I4, 8 cols]", ""), encoding="utf-8")
+        run(xc, dg, "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("xlsx cross-check catches text dropped from the Markdown", "- レイアウト!B4: 日付" in rv, rv)
+        (d / "xx" / "diagram.md").write_text(md, encoding="utf-8")
+        (d / "xx" / "diagram.checked").write_text(
+            "シーケンス#diagram ok\nフロー#diagram ok\nグラフ#chart1 ok\nグラフ#picture1 red box\n", encoding="utf-8")
+        run(xc, dg, "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("xlsx cross-check READY once text is complete and visual checks are recorded", "**Status: READY**" in rv, rv)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",

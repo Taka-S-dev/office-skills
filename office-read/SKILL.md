@@ -96,6 +96,33 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/md_crosscheck.py "仕様書.docx" --out-dir ./md
    ```
 
+   **The same command works for Excel** (`md_crosscheck.py 仕様書.xlsx --out-dir ./md`), with
+   different references, because no converter reads a workbook better than office2md. The
+   Markdown is written in blocks (each table or note of a sheet separately, merged cells marked
+   `[B3:E3, 4 cols]` so the width of a field in a layout table is visible), with a Diagram section per sheet:
+   sequence diagrams drawn with boxes, lifelines and arrows come out as a mermaid
+   `sequenceDiagram` plus a numbered list with the cell each arrow and label came from;
+   flowcharts come out as connections. Charts carry their series values, input rules their
+   choices, pictures their size and alt text. Each sheet is rendered to its own PDF
+   (`<stem>_sheets/sheetNN.pdf`, Excel or LibreOffice). The review then checks two things:
+   - every text in the workbook (cells, shapes, chart titles, rule choices, comments) appears
+     in the Markdown, so you may restructure freely: rewrite a diagram, turn a layout block
+     into a cleaner table, without losing anything;
+   - each reconstructed diagram, chart and picture is listed as a visual check. Open the
+     rendered PDF for that sheet (the PDF reader shows it as an image; extracted pictures in
+     `<stem>_figures/` can be opened directly too), compare, fix the Markdown where the
+     reconstruction is wrong or incomplete, describe pictures that carry information, then add
+     a line starting with the check's id to `<stem>.checked` saying what you found. The checker
+     matches the id only; the note is for the person reading it later, so never record a check
+     you did not look at.
+   READY means nothing is missing and every visual check is recorded.
+
+   Layout tables (fixed-length records, field maps): a header row of position numbers above
+   merged fields gives each field's position, and a field's span gives its width. Adding a
+   field table (position, name, width) to the Markdown helps the reader, but say that reading
+   the header as positions is your interpretation when the sheet does not label it, and keep
+   a row label such as "2-3" as the sheet states it rather than guessing what it spans.
+
 5b. **"Why is this total wrong?" / "What breaks if I change B3?"** Use `scripts/xlsx_deps.py`
    instead of reading formulas one by one. It prints the tree of cells a formula is computed
    from (precedents), or every formula that uses a cell (dependents), across sheets and

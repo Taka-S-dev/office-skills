@@ -366,6 +366,223 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
     return "\n".join(out) + "\n", blocking + counts["tables"]     # the count printed = what blocks READY
 
 
+# -- Excel ------------------------------------------------------------------------------------
+# No converter does better than office2md on a workbook, so the references are the workbook
+# itself: every text it contains must appear in the Markdown (content check, survives any
+# restructuring an agent does), and each sheet is rendered to PDF so that what was reconstructed
+# from shapes (sequence diagrams, flowcharts, charts, pictures) can be compared with the picture.
+# Visual checks are confirmed by writing their id into <stem>.checked; the verdict is READY when
+# nothing is missing and every visual check is confirmed.
+
+XLSX_OPTS = dict(outline=False, profile=False, sheet=None, slide=None, max_rows=0, max_cols=0, formulas=False,
+                 cells=False, form=False, no_coords=False, raw=False, json=False, out=None, blocks=True,
+                 extract_attachments=None, mail_engine="auto", password=None)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"<br>|[\s\\*|/`]", "", str(s))
+
+
+def xlsx_inventory(data: dict) -> list[tuple[str, str]]:
+    """(where, text) for every piece of text in the workbook that the Markdown must carry."""
+    items: list[tuple[str, str]] = []
+    for s in data["sheets"]:
+        name = s["name"]
+        for c in s["cells"]:
+            items.append((f"{name}!{c['address']}", str(c["display"])))
+        for d in s.get("drawings", []):
+            if d.get("text"):
+                items.append((f"{name} {d['kind']} '{d['name']}' at {d['anchor']}", d["text"]))
+        for ch in s.get("charts", []):
+            if ch.get("title"):
+                items.append((f"{name} chart '{ch['name']}' title", ch["title"]))
+            for se in ch.get("series", []):
+                if se.get("name"):
+                    items.append((f"{name} chart '{ch['name']}' series", se["name"]))
+        for v in s.get("validations", []):
+            if v["rule"].startswith("list: "):
+                for choice in v["rule"][6:].split(" (from ")[0].split(", "):
+                    items.append((f"{name} input rule {v['range']}", choice))
+        for c in s.get("comments", []):
+            items.append((f"{name}!{c['cell']} comment", c["text"] or ""))
+    keep = []
+    for where, text in items:
+        n = _norm(text)
+        if len(n) < 2 or re.fullmatch(r"-?\d{1,2}", n):
+            continue        # "1", "8": present everywhere, says nothing about completeness
+        keep.append((where, text))
+    return keep
+
+
+def visual_items(data: dict, sheet_pdf: dict[str, str]) -> list[tuple[str, str]]:
+    items = []
+    for s in data["sheets"]:
+        name = s["name"]
+        pdf = sheet_pdf.get(name, "")
+        where = f" in {pdf}" if pdf else ""
+        d = s.get("diagram")
+        if d and (d["sequence"] or d["edges"] or d["unexplained"]):
+            what = []
+            if d["sequence"]:
+                what.append(f"{len(d['sequence']['messages'])} message(s) between "
+                            f"{len(d['sequence']['participants'])} participant(s)")
+            if d["edges"]:
+                what.append(f"{len(d['edges'])} connection(s)")
+            if d["unexplained"]:
+                what.append(f"{len(d['unexplained'])} line(s) not interpreted")
+            items.append((f"{name}#diagram", f"Compare the Diagram section of sheet {name} ({'; '.join(what)}) with the "
+                          f"drawing{where}: participants, order, arrow directions, labels. Correct the Markdown, and "
+                          "describe any line not interpreted."))
+        for i, ch in enumerate(s.get("charts", []), start=1):
+            items.append((f"{name}#chart{i}", f"Check chart '{ch['name']}' (title, series, values) against the drawn chart{where}."))
+        for i, pc in enumerate(s.get("pictures", []), start=1):
+            if pc.get("placeholder"):
+                continue
+            items.append((f"{name}#picture{i}", f"Picture '{pc['name']}' at {pc['from']}: its content is not extracted. "
+                          f"Look at it{where} and describe what it shows in the Markdown, or note that it carries "
+                          "no information."))
+    return items
+
+
+def render_sheets(src: Path, out: Path, sheet_names: list[str]) -> tuple[dict[str, str], str]:
+    """Render each visible sheet to its own PDF, one page wide. Excel through COM when available,
+    else the whole workbook through LibreOffice. Returns ({sheet: pdf path}, method)."""
+    out.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        ps = r"""
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Excel.Application
+try {
+  $app.Visible = $false; $app.DisplayAlerts = $false; $app.AutomationSecurity = 3
+  $wb = $app.Workbooks.Open($env:OFFICE_SRC, 0, $true)
+  $i = 0
+  foreach ($ws in $wb.Worksheets) {
+    $i++
+    if ($ws.Visible -ne -1) { continue }
+    try {
+      $ps = $ws.PageSetup; $ps.PrintArea = ''; $ps.Zoom = $false; $ps.FitToPagesWide = 1; $ps.FitToPagesTall = $false
+    } catch { }
+    try {
+      $ws.ExportAsFixedFormat(0, (Join-Path $env:OFFICE_OUT ('sheet{0:D2}.pdf' -f $i)))
+      Write-Output ('OK {0}' -f $i)
+    } catch { Write-Output ('EMPTY {0}' -f $i) }
+  }
+  $wb.Close($false)
+} finally { $app.Quit() }
+"""
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                               capture_output=True, text=True, timeout=300,
+                               env={**__import__("os").environ, "OFFICE_SRC": str(src.resolve()), "OFFICE_OUT": str(out.resolve())})
+            done = {int(x.split()[1]) for x in r.stdout.split("\n") if x.startswith("OK ")}
+            if done:
+                return {sheet_names[i - 1]: f"{out.name}/sheet{i:02d}.pdf" for i in sorted(done)
+                        if 0 < i <= len(sheet_names)}, "Excel"
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    so = shutil.which("soffice") or (r"C:\Program Files\LibreOffice\program\soffice.exe"
+                                      if Path(r"C:\Program Files\LibreOffice\program\soffice.exe").exists() else None)
+    if so:
+        try:
+            r = subprocess.run([so, "--headless", "--convert-to", "pdf", "--outdir", str(out.resolve()), str(src.resolve())],
+                               capture_output=True, text=True, timeout=300)
+            pdf = out / (src.stem + ".pdf")
+            if pdf.exists():
+                return {name: f"{out.name}/{pdf.name} (all sheets in tab order)" for name in sheet_names}, "LibreOffice"
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return {}, ""
+
+
+def xlsx_main(src: Path, a) -> int:
+    out_dir = a.out_dir or src.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = src.stem
+    primary_path = out_dir / f"{stem}.md"
+    fresh = a.fresh or not primary_path.exists()
+    opts = argparse.Namespace(**XLSX_OPTS, images=(out_dir / f"{stem}_figures") if fresh else None, images_base=out_dir)
+    h = office2md.HANDLERS[src.suffix.lower()](src, opts)
+    data = h.dump()
+    if fresh:
+        primary = h.to_markdown(data)
+        primary_path.write_text(primary, encoding="utf-8")
+    else:
+        primary = primary_path.read_text(encoding="utf-8")
+        print(f"[md_crosscheck] reusing existing {primary_path.name} (pass --fresh to regenerate from the workbook)")
+
+    sheet_pdf, method = {}, ""
+    render_dir = out_dir / f"{stem}_sheets"
+    if not a.no_render:
+        names = [s["name"] for s in data["sheets"]]
+        if render_dir.exists() and any(render_dir.glob("*.pdf")) and not a.fresh:
+            sheet_pdf = {n: f"{render_dir.name}/sheet{i:02d}.pdf" for i, n in enumerate(names, start=1)
+                         if (render_dir / f"sheet{i:02d}.pdf").exists()}
+            method = "existing renders"
+        else:
+            sheet_pdf, method = render_sheets(src, render_dir, names)
+
+    inv = xlsx_inventory(data)
+    md_norm = _norm(primary)
+    missing = [(w, t) for w, t in inv if _norm(t) not in md_norm]
+    visuals = visual_items(data, sheet_pdf)
+    checked_path = out_dir / f"{stem}.checked"
+    checked_lines = checked_path.read_text(encoding="utf-8").splitlines() if checked_path.exists() else []
+    done = {vid for vid, _ in visuals if any(ln.strip().startswith(vid) for ln in checked_lines)}
+    ready = not missing and len(done) == len(visuals)
+
+    def ident(s: str) -> str:
+        return s.replace("`", "'")
+
+    out = [f"# Cross-check of {src.name}", "", office2md.DATA_NOTICE, "",
+           f"**Status: {'READY' if ready else 'NEEDS REVIEW'}**", "",
+           f"Text check: {len(inv)} text item(s) in the workbook, {len(missing)} missing from the Markdown.",
+           f"Visual checks: {len(done)} of {len(visuals)} confirmed (record confirmations in {checked_path.name}).",
+           (f"Rendered sheets ({method}): " + "; ".join(f"{k} → {v}" for k, v in sheet_pdf.items())) if sheet_pdf
+           else "Rendered sheets: none (no Excel or LibreOffice, or --no-render); visual checks need another way to see the sheets.",
+           "READY means every text in the workbook appears in the Markdown and every visual check is confirmed. "
+           "The Markdown may be restructured freely (rewrite a diagram, merge blocks into one table); the text check "
+           "keeps that from dropping anything.", ""]
+    out += [f"## Text in the workbook missing from the Markdown ({len(missing)})", ""]
+    if missing:
+        out.append("Each line is where the text sits in the workbook. Put it back in the Markdown where it belongs.")
+        out.append("")
+        for w, t in missing[:200]:
+            out.append(f"- {esc(w)}: {esc(t)[:200]}")
+        if len(missing) > 200:
+            out.append(f"- … {len(missing) - 200} more")
+    else:
+        out.append("None.")
+    out += ["", f"## Visual checks ({len(done)} of {len(visuals)} confirmed)", ""]
+    if visuals:
+        for vid, what in sorted(visuals, key=lambda v: v[0] in done):
+            out.append(f"- [{'x' if vid in done else ' '}] `{ident(vid)}` — {what}")
+        out += ["", f"After checking one, add a line starting with its id to {checked_path.name}, with what you found, "
+                f"for example: `{ident(visuals[0][0])}  matches the rendered sheet`."]
+    else:
+        out.append("None: no diagrams, charts or pictures with content.")
+    notes = []
+    for s in data["sheets"]:
+        d = s.get("diagram")
+        if d and d["unexplained"]:
+            notes.append(f"- {esc(s['name'])}: {len(d['unexplained'])} line(s) the reconstruction could not attach to "
+                         "shapes or lifelines; they are listed in the sheet's Diagram section.")
+        if s.get("uncached_formulas"):
+            notes.append(f"- {esc(s['name'])}: {len(s['uncached_formulas'])} formula(s) without a cached value; their "
+                         "results are unknown until the workbook is recalculated.")
+    if notes:
+        out += ["", "## Notes", ""] + notes
+    out += ["", "## Done when", "",
+            "Rerun after editing the Markdown or the .checked file. A rerun keeps the edits (--fresh starts over)."]
+    review_path = out_dir / f"{stem}.review.md"
+    review_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    print(f"[md_crosscheck] primary:   {primary_path}")
+    if sheet_pdf:
+        print(f"[md_crosscheck] rendered:  {render_dir} ({method})")
+    print(f"[md_crosscheck] review:    {review_path}  "
+          f"({'READY' if ready else f'{len(missing)} missing, {len(visuals) - len(done)} visual check(s) open'})")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("file", type=Path)
@@ -375,13 +592,17 @@ def main(argv=None) -> int:
     ap.add_argument("--no-apply", action="store_true",
                     help="report only; do not fold safe exact-match fixes (equations, links, bold) into the primary")
     ap.add_argument("--fresh", action="store_true",
-                    help="regenerate the .md from the .docx even if one exists (a plain rerun keeps your edits)")
+                    help="regenerate the .md from the file even if one exists (a plain rerun keeps your edits)")
+    ap.add_argument("--no-render", action="store_true",
+                    help="xlsx: do not render sheets to PDF (visual checks then have nothing to compare against)")
     a = ap.parse_args(argv)
     src = a.file
     if not src.exists():
         sys.exit(f"[md_crosscheck] file not found: {src}")
+    if src.suffix.lower() in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+        return xlsx_main(src, a)
     if src.suffix.lower() not in (".docx", ".docm", ".dotx"):
-        sys.exit("[md_crosscheck] Word files only; other formats have no reference converter worth comparing")
+        sys.exit("[md_crosscheck] Word and Excel files only")
     out_dir = a.out_dir or src.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = src.stem
