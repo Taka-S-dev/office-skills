@@ -38,6 +38,37 @@ id_rsa*
 *pws*.txt
 pwlist*.txt
 
+# Office documents and data never belong in the repository: the tests build their own
+# fixtures in a temporary folder, so any such file here is a real one put down to try
+*.xlsx
+*.xlsm
+*.xltx
+*.xltm
+*.xls
+*.docx
+*.docm
+*.dotx
+*.doc
+*.pptx
+*.pptm
+*.potx
+*.ppt
+*.pdf
+*.msg
+*.eml
+*.zip
+*.7z
+*.mpp
+*.mpt
+*.xml
+*.csv
+*.tsv
+*.vsdx
+*.drawio
+*.png
+*.jpg
+*.jpeg
+
 # Organisation-specific profiles stay local; only the README and template are published.
 /office-read/profiles/*.md
 !/office-read/profiles/README.md
