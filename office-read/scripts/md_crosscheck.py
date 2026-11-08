@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import office2md  # noqa: E402
+import diagram_lint  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # Windows console defaults to cp932
@@ -349,7 +350,13 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
     out.append("Rerun this script after editing. The lists above should contain only differences you decided to keep.")
 
     # status block at the top: the one place to look to know whether this is finished
-    blocking = counts["missing"] + counts["links"] + counts["headings"]
+    lint = diagram_lint.lint_markdown(primary)
+    if lint:
+        out += ["## Diagram syntax problems (" + str(sum(len(e) for _, _, e in lint)) + ")", ""]
+        for lang, line, errs in lint:
+            out += [f"- {lang} block at line {line}: {esc(e)}" for e in errs]
+        out.append("")
+    blocking = counts["missing"] + counts["links"] + counts["headings"] + sum(len(e) for _, _, e in lint)
     verdict = "READY" if blocking == 0 and counts["tables"] == 0 else "NEEDS REVIEW"
     status = [f"**Status: {verdict}**", ""]
     if applied:
@@ -500,7 +507,8 @@ def xlsx_main(src: Path, a) -> int:
     stem = src.stem
     primary_path = out_dir / f"{stem}.md"
     fresh = a.fresh or not primary_path.exists()
-    opts = argparse.Namespace(**XLSX_OPTS, images=(out_dir / f"{stem}_figures") if fresh else None, images_base=out_dir)
+    opts = argparse.Namespace(**XLSX_OPTS, uml=a.uml, images=(out_dir / f"{stem}_figures") if fresh else None,
+                              images_base=out_dir, drawio=out_dir / f"{stem}.drawio")
     h = office2md.HANDLERS[src.suffix.lower()](src, opts)
     data = h.dump()
     if fresh:
@@ -528,7 +536,13 @@ def xlsx_main(src: Path, a) -> int:
     checked_path = out_dir / f"{stem}.checked"
     checked_lines = checked_path.read_text(encoding="utf-8").splitlines() if checked_path.exists() else []
     done = {vid for vid, _ in visuals if any(ln.strip().startswith(vid) for ln in checked_lines)}
-    ready = not missing and len(done) == len(visuals)
+    lint = diagram_lint.lint_markdown(primary)
+    lint_count = sum(len(e) for _, _, e in lint)
+    rendered = []
+    if a.render_diagrams and diagram_lint.renderers():
+        rendered = diagram_lint.render(primary, render_dir / "diagrams")
+    render_errors = [r for r in rendered if r[3]]
+    ready = not missing and len(done) == len(visuals) and not lint_count and not render_errors
 
     def ident(s: str) -> str:
         return s.replace("`", "'")
@@ -536,12 +550,27 @@ def xlsx_main(src: Path, a) -> int:
     out = [f"# Cross-check of {src.name}", "", office2md.DATA_NOTICE, "",
            f"**Status: {'READY' if ready else 'NEEDS REVIEW'}**", "",
            f"Text check: {len(inv)} text item(s) in the workbook, {len(missing)} missing from the Markdown.",
+           f"Diagram check: {len(diagram_lint.blocks(primary))} mermaid/PlantUML block(s), {lint_count} problem(s)"
+           + (f"; rendered with the installed tool: {len(rendered) - len(render_errors)} ok, {len(render_errors)} failed."
+              if rendered else "; structure checked (add --render-diagrams to also render with an installed tool)."),
            f"Visual checks: {len(done)} of {len(visuals)} confirmed (record confirmations in {checked_path.name}).",
            (f"Rendered sheets ({method}): " + "; ".join(f"{k} → {v}" for k, v in sheet_pdf.items())) if sheet_pdf
            else "Rendered sheets: none (no Excel or LibreOffice, or --no-render); visual checks need another way to see the sheets.",
            "READY means every text in the workbook appears in the Markdown and every visual check is confirmed. "
            "The Markdown may be restructured freely (rewrite a diagram, merge blocks into one table); the text check "
            "keeps that from dropping anything.", ""]
+    if lint or render_errors:
+        out += [f"## Diagram problems ({lint_count + len(render_errors)})", "",
+                "A diagram that does not parse is drawn wrongly or not at all. Fix the block at the line given."]
+        out.append("")
+        for lang, line, errs in lint:
+            out += [f"- {lang} block at line {line}: {esc(e)}" for e in errs]
+        for lang, line, _, err in render_errors:
+            out.append(f"- {lang} block at line {line}: the renderer rejected it: {esc(err)}")
+        out.append("")
+    if rendered and not render_errors:
+        out += ["Diagrams rendered back from the Markdown (compare with the sheet renders): "
+                + "; ".join(f"{Path(img).name}" for _, _, img, _ in rendered), ""]
     out += [f"## Text in the workbook missing from the Markdown ({len(missing)})", ""]
     if missing:
         out.append("Each line is where the text sits in the workbook. Put it back in the Markdown where it belongs.")
@@ -593,6 +622,10 @@ def main(argv=None) -> int:
                     help="report only; do not fold safe exact-match fixes (equations, links, bold) into the primary")
     ap.add_argument("--fresh", action="store_true",
                     help="regenerate the .md from the file even if one exists (a plain rerun keeps your edits)")
+    ap.add_argument("--uml", choices=["mermaid", "plantuml", "both"], default="mermaid",
+                    help="xlsx: notation for reconstructed diagrams")
+    ap.add_argument("--render-diagrams", action="store_true",
+                    help="also render each mermaid/PlantUML block with an installed tool (PlantUML runs sandboxed)")
     ap.add_argument("--no-render", action="store_true",
                     help="xlsx: do not render sheets to PDF (visual checks then have nothing to compare against)")
     a = ap.parse_args(argv)

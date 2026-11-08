@@ -11,7 +11,7 @@ officeskill/
 │   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
 │   │                   / mail_digest（フォルダ内メールの時系列）/ unpack（zip・7z の展開）
-│   │                   / md_crosscheck（Word → md を pandoc 等と突き合わせて差分を列挙）
+│   │                   / md_crosscheck（Word・Excel → md の照合と目視確認）/ diagram_lint（mermaid・PlantUML の構文検査）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -100,6 +100,11 @@ pandoc が無い環境でも 1 の md は作られ、review に「照合相手�
 - 図形で描いたシーケンス図は、生存線・参加者・矢印の向き・ラベルを位置から復元し、mermaid と
   「どのセルの矢印か」付きの番号リストで出す。フロー図はコネクタの接続で出す。グラフは系列の値、
   入力規則は選択肢、画像は寸法と代替テキストまで出す。
+- シーケンス図は戻り矢印（点線）、自分宛ての矢印、活性区間、alt / loop などの枠と else、ノートまで復元する。
+  `--uml plantuml|both` で PlantUML でも出せる。図そのものは `<名前>.drawio` に位置と線をそのまま写した
+  編集可能な形でも残る。md の中の mermaid / PlantUML は構文を検査し、壊れていれば READY にしない
+  （`diagram_lint.py` 単体でも使える。`--render-diagrams` を付け、PlantUML か mermaid-cli が入っていれば
+  実際に描画して確かめる。PlantUML は砂箱設定で動かす）。
 - 各シートを `<名前>_sheets/sheetNN.pdf` に描画し、review.md に「ブックの文字で md に無いもの」と
   「目視で確認すべき図・グラフ・画像」を出す。エージェントは PDF を見て md を直し、確認したものの ID を
   `<名前>.checked` に書く。全部そろえば READY。

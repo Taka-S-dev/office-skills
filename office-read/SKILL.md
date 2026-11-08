@@ -100,9 +100,14 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    different references, because no converter reads a workbook better than office2md. The
    Markdown is written in blocks (each table or note of a sheet separately, merged cells marked
    `[B3:E3, 4 cols]` so the width of a field in a layout table is visible), with a Diagram section per sheet:
-   sequence diagrams drawn with boxes, lifelines and arrows come out as a mermaid
-   `sequenceDiagram` plus a numbered list with the cell each arrow and label came from;
-   flowcharts come out as connections. Charts carry their series values, input rules their
+   sequence diagrams drawn with boxes, lifelines and arrows come out as a `sequenceDiagram`
+   (mermaid by default; `--uml plantuml|both`) plus a numbered list with the cell each item came
+   from. Recognised: messages, dashed replies, self messages (also when drawn as three lines),
+   activation bars, alt / opt / loop / par / critical / break frames with else and [conditions],
+   and notes; each only from an unambiguous cue, anything else is listed as not interpreted.
+   Flowcharts come out as connections. The drawing is also written to `<stem>.drawio` as an
+   editable copy that keeps every position, line, dash and arrowhead, which is the faithful
+   version when the reconstruction is in doubt. Charts carry their series values, input rules their
    choices, pictures their size and alt text. Each sheet is rendered to its own PDF
    (`<stem>_sheets/sheetNN.pdf`, Excel or LibreOffice). The review then checks two things:
    - every text in the workbook (cells, shapes, chart titles, rule choices, comments) appears
@@ -115,7 +120,14 @@ on a copy of the file to let Excel/LibreOffice fill them in.
      a line starting with the check's id to `<stem>.checked` saying what you found. The checker
      matches the id only; the note is for the person reading it later, so never record a check
      you did not look at.
-   READY means nothing is missing and every visual check is recorded.
+   READY means nothing is missing, every visual check is recorded, and every mermaid / PlantUML
+   block in the Markdown passes the diagram check (participants declared, frames closed,
+   activations balanced). The check runs on your edited Markdown, so a correction that breaks a
+   diagram is caught; `scripts/diagram_lint.py file.md` runs it alone. With `--render-diagrams`
+   and PlantUML (`PLANTUML_JAR` or `plantuml` on PATH, run in its sandbox profile) or mermaid-cli
+   (`mmdc`) installed, the review also renders each block with the real tool and lists the images
+   to compare with the sheet. Rendering is off by default because the diagram text comes from the
+   file.
 
    Layout tables (fixed-length records, field maps): a header row of position numbers above
    merged fields gives each field's position, and a field's span gives its width. Adding a

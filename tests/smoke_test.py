@@ -151,11 +151,46 @@ def main() -> int:
               and "| K3:K5 | list: 必須, 任意 |" in o and "| L3:L5 | list: 1, 2, 3 (from $N$2:$N$4) |" in o, o)
         o = run(READ, dg, "--sheet", "グラフ")
         check("xlsx chart series and picture size", "売上: 1月=120, 2月=80, 3月=150" in o and "40x20" in o, o)
+        rich = d / "seq_rich.xlsx"
+        o = run(READ, rich, "--uml", "both", "--drawio", d / "rich.drawio", "--out", d / "rich.md")
+        rm = (d / "rich.md").read_text(encoding="utf-8")
+        check("sequence: activation, self message from 3 lines, alt/else with conditions, dashed replies, note (mermaid)",
+              all(x in rm for x in ["P1->>P2: 注文登録\n    activate P2", "P2->>P2: 検証", "alt 在庫あり\n        P2->>P3: 引当",
+                                    "else 在庫なし\n        P2-->>P1: 在庫切れ通知", "Note over P3: 読み取り専用",
+                                    "P2-->>P1: 注文番号\n    deactivate P2"]), rm)
+        check("sequence: same in PlantUML", all(x in rm for x in ["@startuml", "alt 在庫あり", "P2 --> P1 : 注文番号", "@enduml"]), rm)
+        from lxml import etree as _et
+        dio = _et.parse(str(d / "rich.drawio"), _et.XMLParser(resolve_entities=False)).getroot()
+        dcells = dio.findall(".//mxCell")
+        check("draw.io copy keeps lines, arrowheads, dashes and boxes",
+              # 3 lifelines + 4 messages + 3 self-message segments + 1 else separator; 6 dashed (lifelines, separator, replies)
+              sum(1 for c in dcells if c.get("edge")) == 11 and sum(1 for c in dcells if "dashed=1" in (c.get("style") or "")) == 6
+              and any("在庫切れ通知" == c.get("value") for c in dcells) and "Editable copy" in rm, str(len(dcells)))
+        frame = next((c for c in dcells if c.get("vertex") and not c.get("value") and "fillColor=none" in (c.get("style") or "")), None)
+        check("draw.io copy keeps a transparent frame transparent", frame is not None, str([c.get("style") for c in dcells][:6]))
+        lint = ROOT / "office-read" / "scripts" / "diagram_lint.py"
+        o = run(lint, d / "rich.md")
+        check("diagram_lint: generated diagrams are clean", "2 diagram block(s), 0 with problems" in o, o)
+        (d / "broken.md").write_text(rm.replace("        P2->>P3: 引当", "        P2->>P4: 引当")
+                                     .replace("    end\n    Note over P3", "    Note over P3", 1), encoding="utf-8")
+        o = run(lint, d / "broken.md", expect_ok=False)
+        check("diagram_lint: catches undeclared participant and unclosed alt",
+              "undeclared participant 'P4'" in o and "'alt' block is never closed" in o, o)
         xc = ROOT / "office-read" / "scripts" / "md_crosscheck.py"
+        run(xc, rich, "--out-dir", d / "xr", "--no-render")
+        bm = (d / "xr" / "seq_rich.md").read_text(encoding="utf-8")
+        (d / "xr" / "seq_rich.md").write_text(bm.replace("    end\n    Note over P3", "    Note over P3", 1), encoding="utf-8")
+        (d / "xr" / "seq_rich.checked").write_text("シーケンス2#diagram ok\n", encoding="utf-8")
+        run(xc, rich, "--out-dir", d / "xr", "--no-render")
+        rv = (d / "xr" / "seq_rich.review.md").read_text(encoding="utf-8")
+        check("cross-check refuses READY while a diagram block is broken",
+              "NEEDS REVIEW" in rv and "## Diagram problems" in rv and "never closed" in rv and (d / "xr" / "seq_rich.drawio").exists(), rv)
         o = run(xc, dg, "--out-dir", d / "xx", "--no-render")
         rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
         check("xlsx cross-check: nothing missing, 4 visual checks open",
               "0 missing from the Markdown" in rv and "Visual checks: 0 of 4 confirmed" in rv and "NEEDS REVIEW" in rv, rv)
+        dio_text = (d / "xx" / "diagram.drawio").read_text(encoding="utf-8")
+        check("draw.io chart placeholder carries the series values", "売上: 1月=120, 2月=80, 3月=150" in dio_text, dio_text[:300])
         md = (d / "xx" / "diagram.md").read_text(encoding="utf-8")
         (d / "xx" / "diagram.md").write_text(md.replace("日付 [B4:I4, 8 cols]", ""), encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")

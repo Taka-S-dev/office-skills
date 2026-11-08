@@ -460,27 +460,79 @@ class XlsxHandler(Handler):
             diagram = xd.analyse(shapes, [{"address": c["address"], "text": c["display"]} for c in cells], entry["metrics"])
             diagram["mermaid_sequence"] = xd.mermaid_sequence(diagram["sequence"]) if diagram["sequence"] else ""
             diagram["mermaid_flow"] = xd.mermaid_flow(diagram["edges"]) if diagram["edges"] else ""
+            diagram["plantuml_sequence"] = xd.plantuml_sequence(diagram["sequence"]) if diagram["sequence"] else ""
+            diagram["plantuml_flow"] = xd.plantuml_flow(diagram["edges"]) if diagram["edges"] else ""
+        drawio_ref = ""
+        if getattr(self.opts, "drawio", None) and entry.get("metrics") and any(sh["kind"] != "group" for sh in shapes):
+            page = xd.drawio_page(ws.title, shapes, [{"address": c["address"], "text": c["display"]} for c in cells],
+                                  entry["metrics"], f"p{len(self._drawio_pages) + 1}", entry.get("charts", []))
+            if page:
+                self._drawio_pages.append(page)
+                target = Path(self.opts.drawio)
+                base = getattr(self.opts, "images_base", None)
+                try:
+                    shown = target.resolve().relative_to(Path(base).resolve()).as_posix() if base else str(target)
+                except ValueError:
+                    shown = str(target)
+                drawio_ref = f"{shown}, page '{md_escape(re.sub(r'[\x00-\x1f\x7f]', ' ', ws.title))}'"
         rules = [{"range": v["sqref"], "rule": self._rule_text(ws.parent, ws.title, v)} for v in entry.get("validations", [])]
         return {"drawings": drawings, "pictures": pictures, "diagram": diagram, "charts": entry.get("charts", []),
-                "validations": rules, "shape_count": len(shapes)}
+                "validations": rules, "shape_count": len(shapes), "drawio": drawio_ref}
 
     def _render_extras(self, s: dict) -> list[str]:
         out: list[str] = []
         d = s.get("diagram")
+        if s.get("drawio"):
+            out += ["", f"Editable copy of this sheet's drawing (same positions, lines and arrows): {s['drawio']}"]
         if d and (d["sequence"] or d["edges"] or d["unexplained"]):
             out += ["", "**Diagram** (reconstructed from the shapes' positions; verify against the rendered sheet)"]
             seq = d["sequence"]
+            uml = getattr(self.opts, "uml", "mermaid") or "mermaid"
+
+            def blocks(kind: str) -> list[str]:
+                got = []
+                if uml in ("mermaid", "both") and d.get(f"mermaid_{kind}"):
+                    got += ["```mermaid", d[f"mermaid_{kind}"].replace("```", "ˋˋˋ"), "```", ""]
+                if uml in ("plantuml", "both") and d.get(f"plantuml_{kind}"):
+                    got += ["```plantuml", d[f"plantuml_{kind}"].replace("```", "ˋˋˋ"), "```", ""]
+                return got
             if seq:
-                out += ["", "Sequence:", "", "```mermaid", d["mermaid_sequence"].replace("```", "ˋˋˋ"), "```", ""]
-                for i, msg in enumerate(seq["messages"], start=1):
-                    label = md_escape(msg["label"]) if msg["label"] else "_(no label found)_"
-                    note = f"arrow at {msg['at']}" + ("" if msg["direction_known"] else ", direction assumed: no single arrowhead")
-                    src = f"; label from {msg['label_source']}" if msg["label_source"] else ""
-                    out.append(f"{i}. {md_escape(msg['from'])} → {md_escape(msg['to'])}: {label}  ({note}{src})")
+                out += ["", "Sequence:", ""] + blocks("sequence")
+                n = 0
+                depth = 0
+                names = {p["key"]: p["name"] for p in seq["participants"]}
+                for e in seq.get("events") or [{"type": "msg", **mm} for mm in seq["messages"]]:
+                    pad = "   " * depth
+                    if e["type"] == "msg":
+                        n += 1
+                        label = md_escape(e["label"]) if e["label"] else "_(no label found)_"
+                        kind = ", self message" if e.get("self") else ""
+                        kind += ", reply (dashed)" if e.get("reply") else ""
+                        note = f"arrow at {e['at']}{kind}" + ("" if e["direction_known"] else ", direction assumed: no single arrowhead")
+                        src = f"; label from {e['label_source']}" if e["label_source"] else ""
+                        out.append(f"{pad}{n}. {md_escape(e['from'])} → {md_escape(e['to'])}: {label}  ({note}{src})")
+                    elif e["type"] == "start":
+                        out.append(f"{pad}- [{e['kw']}{(' ' + md_escape(e['cond'])) if e['cond'] else ''}] frame at {e['at']}")
+                        depth += 1
+                    elif e["type"] == "else":
+                        out.append(f"{'   ' * max(0, depth - 1)}- [else{(' ' + md_escape(e['cond'])) if e['cond'] else ''}]")
+                    elif e["type"] == "end":
+                        depth = max(0, depth - 1)
+                        out.append(f"{'   ' * depth}- [end {e['kw']}]")
+                    elif e["type"] == "note":
+                        out.append(f"{pad}- Note {e['where']} {', '.join(md_escape(x) for x in e['names'])}: "
+                                   f"{md_escape(e['text'])}  (at {e['at']})")
+                    elif e["type"] == "act":
+                        out.append(f"{pad}- {md_escape(names.get(e['key'], e['key']))} becomes active (bar at {e['at']})")
+                    elif e["type"] == "deact":
+                        out.append(f"{pad}- {md_escape(names.get(e['key'], e['key']))} ends its activation")
                 out.append("")
                 out.append("Participants: " + "; ".join(f"{md_escape(p['name'])} ({p['source']})" for p in seq["participants"]))
+                if seq.get("dropped_frames"):
+                    out.append("Frames overlapping without nesting, left out: "
+                               + ", ".join(f"{f['kw']} at {f['at']}" for f in seq["dropped_frames"]))
             if d["edges"]:
-                out += ["", "Connections:", "", "```mermaid", d["mermaid_flow"].replace("```", "ˋˋˋ"), "```", ""]
+                out += ["", "Connections:", ""] + blocks("flow")
                 for e in d["edges"]:
                     arrow = "↔" if e["both"] else "—" if e["none"] else "→"
                     label = f" [{md_escape(e['label'])}]" if e.get("label") else ""
@@ -601,6 +653,7 @@ class XlsxHandler(Handler):
         import xlsx_drawing
         model = xlsx_drawing.read_workbook(self.path, values_wb, lambda ref: self._resolve_ref(values_wb, ref))
         self._fig_n = 0
+        self._drawio_pages: list[str] = []
 
         sheets = []
         for ws in values_wb.worksheets:
@@ -678,6 +731,9 @@ class XlsxHandler(Handler):
 
         if wanted and not sheets:
             sys.exit(f"[office2md] sheet '{wanted}' not found. Sheets: {values_wb.sheetnames}")
+        if getattr(self.opts, "drawio", None) and self._drawio_pages:
+            Path(self.opts.drawio).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.opts.drawio).write_text(xlsx_drawing.drawio_file(self._drawio_pages), encoding="utf-8")
         return {"file": str(self.path), "type": "xlsx", "sheets": sheets}
 
     # -- forms: label / value pairs -----------------------------------------------------
@@ -817,7 +873,7 @@ class XlsxHandler(Handler):
 
         for s in data["sheets"]:
             flag = "" if s["state"] == "visible" else f"  _({s['state']})_"
-            out.append(f"## Sheet: {s['name']}{flag}")
+            out.append(f"## Sheet: {md_escape(re.sub(r'[\x00-\x1f\x7f]', ' ', s['name']))}{flag}")
             out.append(f"Range {s['dimensions']} · {s['max_row']} rows × {s['max_col']} cols")
             if s["merged_ranges"]:
                 out.append("Merged: " + ", ".join(s["merged_ranges"][:20])
@@ -2155,6 +2211,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cells", action="store_true",
                     help="xlsx: list non-empty cells as Sheet!A1 = value instead of a grid (good for forms and comparisons)")
     ap.add_argument("--no-coords", action="store_true", help="xlsx: plain table without row numbers / column letters")
+    ap.add_argument("--drawio", type=Path, metavar="FILE",
+                    help="xlsx: write the drawings as an editable draw.io file, one page per sheet")
+    ap.add_argument("--uml", choices=["mermaid", "plantuml", "both"], default="mermaid",
+                    help="xlsx: notation for reconstructed sequence diagrams and flowcharts")
     ap.add_argument("--blocks", action="store_true",
                     help="xlsx: split each sheet into blocks (tables, notes) instead of one grid; merged cells show their span")
     ap.add_argument("--raw", action="store_true",

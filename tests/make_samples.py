@@ -402,6 +402,48 @@ def inject_drawing(xlsx: Path, sheet_xml: str, name: str, body: str) -> None:
 inject_drawing(out / "diagram.xlsx", "xl/worksheets/sheet1.xml", "drawing91", seq_xml)
 inject_drawing(out / "diagram.xlsx", "xl/worksheets/sheet2.xml", "drawing92", flow_xml)
 
+
+# --- seq_rich.xlsx: the rest of UML sequence notation ------------------------------------
+# activation bar, self message drawn as three separate lines, alt frame with a tag box, an else
+# separator and [conditions], dashed replies, and a note. Shapes have outlines so the rendered
+# sheet shows them.
+def _rect(sid, name, text="", fill=None, a_from=None):
+    fill_xml = '<a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill>' if fill == "white" else "<a:noFill/>"
+    body = (f'<xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="ja-JP" sz="900"/><a:t>{text}</a:t></a:r></a:p></xdr:txBody>'
+            if text else "")
+    return (f'<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="{sid}" name="{name}"/><xdr:cNvSpPr/></xdr:nvSpPr>'
+            f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+            f'{fill_xml}<a:ln w="9525"><a:solidFill><a:srgbClr val="000000"/></a:solidFill></a:ln></xdr:spPr>{body}</xdr:sp>')
+
+
+def _anchor_off(c1, o1, r1, c2, o2, r2, body):
+    return (f"<xdr:twoCellAnchor><xdr:from><xdr:col>{c1}</xdr:col><xdr:colOff>{o1}</xdr:colOff><xdr:row>{r1}</xdr:row>"
+            f"<xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>{c2}</xdr:col><xdr:colOff>{o2}</xdr:colOff>"
+            f"<xdr:row>{r2}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>{body}<xdr:clientData/></xdr:twoCellAnchor>")
+
+
+COL = 609600                     # default column width in EMU (64 px)
+rw = openpyxl.Workbook(); rw.active.title = "シーケンス2"; rw.save(out / "seq_rich.xlsx")
+rich_xml = "".join([
+    _anchor(1, 1, 3, 3, _rect(2, "ブラウザ", "ブラウザ")), _anchor(5, 1, 7, 3, _rect(3, "APIサーバ", "APIサーバ")),
+    _anchor(9, 1, 11, 3, _rect(4, "DB", "DB")),
+    _anchor(2, 3, 2, 22, _line(5, "生存線 1", dash=True)), _anchor(6, 3, 6, 22, _line(6, "生存線 2", dash=True)),
+    _anchor(10, 3, 10, 22, _line(7, "生存線 3", dash=True)),
+    _anchor_off(5, int(COL * 0.85), 5, 6, int(COL * 0.15), 20, _rect(8, "活性区間", fill="white")),
+    _anchor(2, 5, 6, 5, _line(9, "矢印 注文登録", tail=True)), _anchor(3, 3, 5, 5, _box(10, "ラベル 注文登録", "注文登録", txbox=True)),
+    _anchor(6, 7, 7, 7, _line(11, "自己 1")), _anchor(7, 7, 7, 8, _line(12, "自己 2")),
+    _anchor(6, 8, 7, 8, _line(13, "自己 3", flip_h=True, tail=True)), _anchor(7, 6, 9, 7, _box(14, "ラベル 検証", "検証", txbox=True)),
+    _anchor(1, 9, 11, 16, _rect(15, "枠")), _anchor(1, 9, 3, 10, _box(16, "枠タグ", "alt [在庫あり]", txbox=True)),
+    _anchor(6, 11, 10, 11, _line(17, "矢印 引当", tail=True)), _anchor(7, 10, 9, 11, _box(18, "ラベル 引当", "引当", txbox=True)),
+    _anchor(1, 13, 11, 13, _line(19, "else 区切り", dash=True)), _anchor(1, 13, 3, 14, _box(20, "else 条件", "[在庫なし]", txbox=True)),
+    _anchor(2, 15, 6, 15, _line(21, "戻り 在庫切れ", flip_h=True, tail=True, dash=True)),
+    _anchor(3, 14, 5, 15, _box(22, "ラベル 在庫切れ", "在庫切れ通知", txbox=True)),
+    _anchor(9, 17, 12, 18, _box(23, "ノート", "読み取り専用", txbox=True)),
+    _anchor(2, 20, 6, 20, _line(24, "戻り 注文番号", flip_h=True, tail=True, dash=True)),
+    _anchor(3, 18, 5, 19, _box(25, "ラベル 注文番号", "注文番号", txbox=True)),
+])
+inject_drawing(out / "seq_rich.xlsx", "xl/worksheets/sheet1.xml", "drawing93", rich_xml)
+
 # --- pptx ---
 from pptx import Presentation
 from pptx.util import Inches
