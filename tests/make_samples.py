@@ -490,6 +490,118 @@ em.set_content("関連資料を圧縮して添付します。")
 em.add_attachment((out / "添付資料.zip").read_bytes(), maintype="application", subtype="zip", filename="添付資料.zip")
 (out / "mail4.eml").write_bytes(bytes(em))
 
+# --- objects.*: content a plain reader drops (SmartArt, legacy shapes, chart sheets) --------
+# SmartArt (same data part in all three formats), legacy VML text box, chart sheet, printed
+# header, struck-through cells and runs, repeated values and sentences, an embedded object.
+DGM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+DGM_DATA_TYPE = "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"
+DGM_DATA_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData"
+
+
+def _dgm_pt(mid, text="", typ=None):
+    t = f' type="{typ}"' if typ else ""
+    body = f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>" if text else "<a:p/>"
+    return f'<dgm:pt modelId="{mid}"{t}><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:lstStyle/>{body}</dgm:t></dgm:pt>'
+
+
+def _dgm_cxn(mid, src, dst, order, typ=None):
+    t = f' type="{typ}"' if typ else ""
+    return f'<dgm:cxn modelId="{mid}"{t} srcId="{src}" destId="{dst}" srcOrd="{order}" destOrd="0"/>'
+
+
+# document node 0; 受付, 審査 (with child 書類確認), 承認; a presentation point that must not show up
+SMARTART_DATA = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><dgm:dataModel xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}">'
+                 "<dgm:ptLst>" + _dgm_pt(0, typ="doc") + _dgm_pt(4, "承認") + _dgm_pt(1, "受付") + _dgm_pt(2, "審査")
+                 + _dgm_pt(3, "書類確認") + _dgm_pt(9, "表示用", typ="pres") + "</dgm:ptLst><dgm:cxnLst>"
+                 + _dgm_cxn(10, 0, 4, 2) + _dgm_cxn(11, 0, 1, 0) + _dgm_cxn(12, 0, 2, 1) + _dgm_cxn(13, 2, 3, 0)
+                 + _dgm_cxn(14, 1, 9, 0, typ="presOf") + "</dgm:cxnLst><dgm:bg/><dgm:whole/></dgm:dataModel>")
+
+
+def _smartart_frame(prefix, rid, sid=40, name="図表 1"):
+    return (f'<{prefix}:graphicFrame macro=""><{prefix}:nvGraphicFramePr><{prefix}:cNvPr id="{sid}" name="{name}"/>'
+            f'<{prefix}:cNvGraphicFramePr/></{prefix}:nvGraphicFramePr><{prefix}:xfrm><a:off x="0" y="0"/>'
+            f'<a:ext cx="3000000" cy="1500000"/></{prefix}:xfrm><a:graphic><a:graphicData uri="{DGM_NS}">'
+            f'<dgm:relIds xmlns:dgm="{DGM_NS}" xmlns:r="{R_NS}" r:dm="{rid}" r:lo="" r:qs="" r:cs=""/>'
+            f'</a:graphicData></a:graphic></{prefix}:graphicFrame>')
+
+
+from openpyxl.chart import BarChart, Reference
+from openpyxl.styles import Font
+ow = openpyxl.Workbook()
+ws = ow.active
+ws.title = "部品"
+for row in [["品名", "数量", "状態"], ["ボルト", 2, "○"], ["ナット", 5, "未定"], ["ワッシャ", "旧品番", "未定"]]:
+    ws.append(row)
+ws["B4"].font = Font(strike=True)
+ws.oddHeader.center.text = "文書番号 DOC-001 第2版"
+cs = ow.create_chartsheet("グラフ専用")
+bar = BarChart()
+bar.title = "数量の推移"
+bar.add_data(Reference(ws, min_col=2, min_row=1, max_row=3), titles_from_data=True)
+cs.add_chart(bar)
+ow.save(out / "objects.xlsx")
+inject_drawing(out / "objects.xlsx", "xl/worksheets/sheet1.xml", "drawing94",
+               _anchor(5, 1, 9, 8, _smartart_frame("xdr", "rIdDgm")))
+VML = ('<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" '
+       'xmlns:x="urn:schemas-microsoft-com:office:excel"><v:shape id="_x0000_s1025" type="#_x0000_t202">'
+       '<v:textbox><div><font>旧形式の注記: 単位は mm</font></div></v:textbox>'
+       '<x:ClientData ObjectType="Text"><x:Anchor>1, 0, 6, 0, 3, 0, 8, 0</x:Anchor></x:ClientData></v:shape></xml>')
+inject_parts(out / "objects.xlsx",
+             {"xl/diagrams/data1.xml": SMARTART_DATA, "xl/drawings/vmlDrawing9.vml": VML},
+             {"xl/drawings/_rels/drawing94.xml.rels": f'<Relationship Id="rIdDgm" Type="{DGM_DATA_REL}" Target="../diagrams/data1.xml"/>',
+              "xl/worksheets/_rels/sheet1.xml.rels": '<Relationship Id="rIdVml" Type="http://schemas.openxmlformats.org/'
+              'officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing9.vml"/>'},
+             [("xl/diagrams/data1.xml", DGM_DATA_TYPE),
+              ("xl/drawings/vmlDrawing9.vml", "application/vnd.openxmlformats-officedocument.vmlDrawing")])
+
+od = docx.Document()
+od.add_heading("通常時の動作", level=1)
+od.add_paragraph("応答がない場合は三回まで再送する。")
+od.add_paragraph("送信の前に状態を確認する。")
+p = od.add_paragraph("改訂: ")
+struck_run = p.add_run("旧仕様では再送しない。")
+struck_run.font.strike = True
+od.add_heading("異常時の動作", level=1)
+od.add_paragraph("応答がない場合は三回まで再送する。")
+od.add_paragraph("終了要求の後は再送しない。")
+from docx.opc.part import Part as DocxPart
+from docx.opc.packuri import PackURI as DocxURI
+from docx.oxml import parse_xml
+dpart = DocxPart(DocxURI("/word/diagrams/data1.xml"), DGM_DATA_TYPE, SMARTART_DATA.encode("utf-8"), od.part.package)
+drid = od.part.relate_to(dpart, DGM_DATA_REL)
+WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+sp = od.add_paragraph()
+sp._p.append(parse_xml(
+    f'<w:r xmlns:w="{W_NS}" xmlns:wp="{WP_NS}" xmlns:a="{A_NS}"><w:drawing><wp:inline><wp:extent cx="3000000" cy="1500000"/>'
+    f'<wp:docPr id="50" name="図表 1"/><a:graphic><a:graphicData uri="{DGM_NS}"><dgm:relIds xmlns:dgm="{DGM_NS}" '
+    f'xmlns:r="{R_NS}" r:dm="{drid}" r:lo="" r:qs="" r:cs=""/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'))
+op = od.add_paragraph()
+op._p.append(parse_xml(
+    f'<w:r xmlns:w="{W_NS}" xmlns:o="urn:schemas-microsoft-com:office:office"><w:object>'
+    '<o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" ShapeID="_x0000_i1025" DrawAspect="Icon" ObjectID="_1"/>'
+    "</w:object></w:r>"))
+od.save(out / "objects.docx")
+
+from pptx.opc.package import Part as PptxPart
+from pptx.opc.packuri import PackURI as PptxURI
+from pptx.oxml import parse_xml as pptx_parse
+op_prs = Presentation()
+sl = op_prs.slides.add_slide(op_prs.slide_layouts[5])
+sl.shapes.title.text = "承認の流れ"
+ppart = PptxPart(PptxURI("/ppt/diagrams/data1.xml"), DGM_DATA_TYPE, op_prs.part.package, SMARTART_DATA.encode("utf-8"))
+prid = sl.part.relate_to(ppart, DGM_DATA_REL)
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+sl.shapes._spTree.append(pptx_parse(_smartart_frame("p", prid).replace(
+    "<p:graphicFrame", f'<p:graphicFrame xmlns:p="{P_NS}" xmlns:a="{A_NS}"', 1).replace(' macro=""', "", 1)))
+(out / "fig2.png").write_bytes(png)
+pic = sl.shapes.add_picture(str(out / "fig2.png"), Inches(5), Inches(4))
+pic._element.nvPicPr.cNvPr.set("descr", "承認フローの図")
+(out / "fig2.png").unlink()
+op_prs.save(out / "objects.pptx")
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

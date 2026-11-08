@@ -36,7 +36,10 @@ NS = {
     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
     "x14": "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
     "xm": "http://schemas.microsoft.com/office/excel/2006/main",
+    "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
 }
+DRAWING_TAGS = ("sp", "cxnSp", "pic", "graphicFrame", "grpSp")
 EMU_PER_PX = 9525
 EMU_PER_PT = 12700
 MAX_COL = 16384
@@ -168,6 +171,68 @@ def _col_index(letters: str) -> int:
         if "A" <= ch <= "Z":
             n = n * 26 + (ord(ch) - 64)
     return n
+
+
+def _col_letter(n: int) -> str:
+    out = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        out = chr(65 + r) + out
+    return out or "A"
+
+
+def read_legacy(pkg: Package, part: str) -> list[dict]:
+    """Text of the legacy (VML) shapes of a sheet: text boxes and form-control labels kept from
+    .xls days, which the DrawingML reader never sees. Cell comments live in the same part and
+    are skipped here (they are read as comments)."""
+    from lxml import etree
+    parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True, huge_tree=False)
+    try:
+        root = etree.fromstring(pkg.z.read(part), parser)
+    except (etree.XMLSyntaxError, KeyError, ValueError):
+        return []
+    if root is None:
+        return []
+    out = []
+    for sh in root.iter():
+        if _local(sh.tag) != "shape":
+            continue
+        cd = next((c for c in sh if _local(c.tag) == "ClientData"), None)
+        kind = (cd.get("ObjectType") or "") if cd is not None else ""
+        if kind == "Note":
+            continue
+        box = next((c for c in sh.iter() if _local(c.tag) == "textbox"), None)
+        text = clean_text(" / ".join(t.strip() for t in box.itertext() if t.strip()), 1000) if box is not None else ""
+        anchor = ""
+        if cd is not None:
+            a = next((c for c in cd if _local(c.tag) == "Anchor"), None)
+            nums = [x.strip() for x in (a.text or "").split(",")] if a is not None else []
+            if len(nums) == 8 and all(x.isdigit() for x in nums):
+                anchor = f"{_col_letter(int(nums[0]) + 1)}{int(nums[2]) + 1}"
+        if text:
+            out.append({"kind": "legacy " + (kind.lower() or "shape"), "name": clean_text(sh.get("id") or "", 80),
+                        "from": anchor, "text": text})
+        if len(out) >= 1000:
+            break
+    return out
+
+
+def read_chartsheet(pkg: Package, part: str, resolve) -> list[dict]:
+    """Charts of a chart sheet (a tab that is only a chart)."""
+    charts = []
+    for typ, tgt, external in pkg.rels(part).values():
+        if typ != "drawing" or external or tgt not in pkg.names:
+            continue
+        for _, ctgt, cext in pkg.rels(tgt).values():
+            if cext or ctgt not in pkg.names or not ctgt.startswith("xl/charts/chart"):
+                continue
+            try:
+                ch = read_chart(pkg, ctgt, resolve)
+            except Exception:
+                ch = {"type": "chart", "title": "", "series": []}
+            ch.update({"name": ctgt.rsplit("/", 1)[-1], "from": "", "to": "", "alt": ""})
+            charts.append(ch)
+    return charts
 
 
 # -- package access -----------------------------------------------------------------------
@@ -420,12 +485,23 @@ def _walk(el, box, m: Metrics, out: list[dict], depth: int, group_id: str | None
             if rid in rels and rels[rid][1] in pkg.names:
                 s["kind"] = "chart"
                 s["chart_part"] = rels[rid][1]
+        dg = el.find(".//" + _q("dgm", "relIds"))
+        if dg is not None:
+            rid = dg.get(_q("r", "dm"))
+            s["kind"] = "smartart"
+            s["smartart"] = []
+            if rid in rels and not rels[rid][2] and rels[rid][1] in pkg.names:
+                try:
+                    s["smartart"] = read_smartart(pkg.xml(rels[rid][1]))
+                except Exception:
+                    pass
+            s["text"] = " / ".join(t for _, t in s["smartart"])
         out.append(s)
     elif tag == "grpSp":
         g = base(X("nvGrpSpPr") + "/" + X("cNvPr"))
         g.update({"kind": "group", "text": "", "prst": "", "textbox": False})
         out.append(g)
-        children = [c for c in el if _local(c.tag) in ("sp", "cxnSp", "pic", "graphicFrame", "grpSp")]
+        children = [x for c in el for x in unwrap(c) if _local(x.tag) in DRAWING_TAGS]
         for c in children:
             cx = _xfrm(c)
             if xf and cx and xf[6] and xf[7]:
@@ -464,6 +540,69 @@ def image_dims(blob: bytes) -> tuple[int, int] | None:
 
 
 # -- charts -----------------------------------------------------------------------------------
+
+def read_smartart(root) -> list[tuple[int, str]]:
+    """(depth, text) for each node of a SmartArt data model (dgm:dataModel), in the order the
+    diagram reads: children of the document node by their order, depth first. The same part is
+    used by Excel, Word and PowerPoint, so the three readers share this."""
+    D = lambda n: _q("dgm", n)  # noqa: E731
+    pts: dict[str, tuple[str, str]] = {}
+    order: list[str] = []
+    for pt in root.iter(D("pt")):
+        mid = pt.get("modelId") or ""
+        typ = pt.get("type") or "node"
+        t_el = pt.find(D("t"))
+        text = ""
+        if t_el is not None:
+            paras = [" ".join((t.text or "") for t in p_.iter(_q("a", "t"))) for p_ in t_el.iter(_q("a", "p"))]
+            text = clean_text(" / ".join(x.strip() for x in paras if x.strip()), 500)
+        pts[mid] = (typ, text)
+        order.append(mid)
+        if len(order) > 2000:
+            break
+    kids: dict[str, list[tuple[int, str]]] = {}
+    for cx in root.iter(D("cxn")):
+        if (cx.get("type") or "parOf") != "parOf":
+            continue
+        try:
+            o = int(cx.get("srcOrd") or 0)
+        except ValueError:
+            o = 0
+        kids.setdefault(cx.get("srcId") or "", []).append((o, cx.get("destId") or ""))
+    out: list[tuple[int, str]] = []
+    seen: set[str] = set()
+
+    def walk(mid: str, depth: int):
+        if mid in seen or len(out) >= 500 or depth > 20:
+            return
+        seen.add(mid)
+        for _, child in sorted(kids.get(mid, [])):
+            typ, text = pts.get(child, ("", ""))
+            if typ not in ("node", "asst"):
+                continue
+            if text:
+                out.append((depth, text))
+            walk(child, depth + 1 if text else depth)
+    for mid in order:
+        if pts[mid][0] == "doc":
+            walk(mid, 0)
+    if not out:                      # no document node: keep the text, lose the hierarchy
+        out = [(0, t) for m in order for typ, t in [pts[m]] if typ in ("node", "asst") and t][:500]
+    return out
+
+
+def unwrap(el) -> list:
+    """Children to read in place of an mc:AlternateContent: the Choice when it holds drawing
+    elements, else the Fallback. Anything else is returned as itself."""
+    if _local(el.tag) != "AlternateContent":
+        return [el]
+    for branch in (el.find(_q("mc", "Choice")), el.find(_q("mc", "Fallback"))):
+        if branch is not None:
+            got = [c for c in branch if _local(c.tag) in DRAWING_TAGS]
+            if got:
+                return got
+    return []
+
 
 def read_chart(pkg: Package, part: str, resolve) -> dict:
     root = pkg.xml(part)
@@ -540,9 +679,21 @@ def read_workbook(path: Path, values_wb, resolve) -> dict[str, dict]:
                 entry["validations"] = read_validations(pkg, part)
             except Exception:
                 pass
+            if part.startswith("xl/chartsheets/"):
+                entry["chartsheet"] = True
+                try:
+                    entry["charts"] = read_chartsheet(pkg, part, resolve)
+                except Exception:
+                    pass
+                result[title] = entry
+                continue
             if title not in values_wb.sheetnames:
                 result[title] = entry
                 continue
+            entry["legacy"] = []
+            for typ, tgt, external in pkg.rels(part).values():
+                if typ == "vmlDrawing" and not external and tgt in pkg.names:
+                    entry["legacy"] += read_legacy(pkg, tgt)
             m = Metrics(values_wb[title])
             entry["metrics"] = m
             for typ, tgt, external in pkg.rels(part).values():
@@ -555,8 +706,8 @@ def read_workbook(path: Path, values_wb, resolve) -> dict[str, dict]:
                     if box is None:
                         continue
                     box = (min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3]))
-                    for el in anchor:
-                        if _local(el.tag) in ("sp", "cxnSp", "pic", "graphicFrame", "grpSp"):
+                    for el in (x for c in anchor for x in unwrap(c)):
+                        if _local(el.tag) in DRAWING_TAGS:
                             _walk(el, box, m, entry["shapes"], 0, None, drels, pkg)
             for s in entry["shapes"]:
                 if s["kind"] == "chart":
@@ -1186,9 +1337,11 @@ def drawio_page(name: str, shapes: list[dict], cells: list[dict], m: Metrics, pa
             else:
                 out.append(f'<mxCell id="{cid}" value="{_x("[picture: " + s.get("name", "") + "]")}" '
                            f'style="rounded=0;html=0;dashed=1;" vertex="1" parent="1">{geo}</mxCell>')
-        elif s["kind"] in ("chart", "frame"):
+        elif s["kind"] in ("chart", "frame", "smartart"):
             cid = nid()
             label = f"[{s['kind']}: {s.get('name', '')}]"
+            if s.get("smartart"):
+                label += "\n" + "\n".join("  " * d + t for d, t in s["smartart"][:60])
             ch = next((c for c in (charts or []) if c.get("name") == s.get("name") and c.get("from") == s.get("from")), None)
             if ch:
                 # draw.io cannot draw an Excel chart, so its placeholder carries the data instead
