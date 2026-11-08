@@ -304,6 +304,10 @@ def need(module: str, pip_name: str):
         sys.exit(f"[office2md] missing library '{module}'. Install with: pip install {pip_name}")
 
 
+class ReadError(Exception):
+    """A file that cannot be read for a reason the user can act on (a converter is missing)."""
+
+
 class Handler:
     """Base class. Subclasses fill `outline()` and `dump()`."""
 
@@ -2348,6 +2352,50 @@ class ArchiveHandler(Handler):
 
 XLSX_EXTS = (".xlsx", ".xlsm", ".xltx", ".xltm")
 
+# ----------------------------------------------------------------------------
+# mpp / mpt / Project XML: everything is in mpp_reader.py; this only hands the file over
+# ----------------------------------------------------------------------------
+
+class MppHandler(Handler):
+    name = "mpp"
+
+    @staticmethod
+    def _reader():
+        here = str(Path(__file__).parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import mpp_reader
+        return mpp_reader
+
+    def _data(self) -> dict:
+        if not hasattr(self, "_cache"):
+            mr = self._reader()
+            try:
+                self._cache = mr.read(self.path, getattr(self.opts, "mpp_engine", None) or "auto")
+            except mr.MppError as e:
+                # mpp_reader's office2md may be another module object when this file runs as a script
+                raise ReadError(str(e)) from None
+        return self._cache
+
+    @classmethod
+    def handles(cls, path: Path) -> bool:
+        """.mpp / .mpt, or an .xml that is Project XML (other .xml files are not ours)."""
+        ext = path.suffix.lower()
+        return ext in (".mpp", ".mpt") or (ext == ".xml" and cls._reader().is_mspdi(path))
+
+    def outline(self) -> dict:
+        return {**self._data(), "outline": True}
+
+    def dump(self) -> dict:
+        return self._data()
+
+    def to_markdown(self, data: dict) -> str:
+        mr = self._reader()
+        if data.get("outline"):
+            return mr.outline_markdown(data, self.path, data["engine"])
+        return mr.to_markdown(data, self.path, data["engine"], bool(getattr(self.opts, "gantt", False)))
+
+
 HANDLERS: dict[str, type[Handler]] = {
     ".eml": EmlHandler, ".msg": MsgHandler,
     ".zip": ArchiveHandler, ".7z": ArchiveHandler,
@@ -2356,6 +2404,7 @@ HANDLERS: dict[str, type[Handler]] = {
     ".docx": DocxHandler, ".dotx": DocxHandler, ".docm": DocxHandler,
     ".pptx": PptxHandler, ".potx": PptxHandler, ".pptm": PptxHandler,
     ".pdf": PdfHandler,
+    ".mpp": MppHandler, ".mpt": MppHandler,
 }
 
 
@@ -2497,6 +2546,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
     ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
+    ap.add_argument("--mpp-engine", choices=["auto", "project", "mpxj"], default="auto",
+                    help="mpp: convert with Microsoft Project (most faithful) or MPXJ; auto tries Project first")
+    ap.add_argument("--gantt", action="store_true", help="mpp: add a mermaid gantt chart")
     ap.add_argument("--images", type=Path, metavar="DIR",
                     help="docx: extract figures into DIR and reference them by path (default: name only)")
     opts = ap.parse_args(argv)
@@ -2509,6 +2561,8 @@ def main(argv: list[str] | None = None) -> int:
                  "Open it in Office and 'Save as' the x-format, or convert with LibreOffice: "
                  f"soffice --headless --convert-to {ext}x \"{opts.file}\"")
     cls = HANDLERS.get(ext)
+    if cls is None and MppHandler.handles(opts.file):
+        cls = MppHandler                   # Project XML; other .xml files stay unsupported
     if cls is None:
         sys.exit(f"[office2md] unsupported extension {ext}. Supported: {', '.join(sorted(HANDLERS))}")
 
@@ -2518,7 +2572,10 @@ def main(argv: list[str] | None = None) -> int:
         # figure paths are written relative to the Markdown file when one is being written
         opts.images_base = opts.out.parent if opts.out else None
         h = cls(opts.file, opts)
-        data = h.outline() if opts.outline else h.dump()
+        try:
+            data = h.outline() if opts.outline else h.dump()
+        except ReadError as e:
+            sys.exit(f"[office2md] {e}")
         if opts.json:
             text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
         else:

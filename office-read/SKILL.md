@@ -1,6 +1,6 @@
 ---
 name: office-read
-description: Read and extract content from Excel, Word, PowerPoint, PDF and CSV files (.xlsx .xlsm .docx .pptx .pdf .csv .tsv) as Markdown or JSON using a bundled script, without any proprietary or licensed skill. Use this whenever the user mentions a spreadsheet, workbook, sheet, Word document, report, slide deck, presentation, PDF, or references a file with one of those extensions and wants it read, summarized, searched, compared, checked, or turned into something else. Also use when the user asks "what's in this file", "look at this Excel", "確認して", "読んで", "まとめて", "中身を見て" about an office file, even if they don't ask for extraction explicitly. Do not use for creating or editing office files.
+description: Read and extract content from Excel, Word, PowerPoint, PDF, CSV and Microsoft Project files (.xlsx .xlsm .docx .pptx .pdf .csv .tsv .mpp) as Markdown or JSON using a bundled script, without any proprietary or licensed skill. Use this whenever the user mentions a spreadsheet, workbook, sheet, Word document, report, slide deck, presentation, PDF, project plan or schedule (MS Project), or references a file with one of those extensions and wants it read, summarized, searched, compared, checked, or turned into something else. Also use when the user asks "what's in this file", "look at this Excel", "確認して", "読んで", "まとめて", "中身を見て" about an office file, even if they don't ask for extraction explicitly. Do not use for creating or editing office files.
 ---
 
 # office-read
@@ -243,6 +243,53 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    python <skill>/scripts/mail_digest.py "./案件" --extract ./att --deep --threads
    ```
 
+5i. **Microsoft Project plans (.mpp).** `office2md.py 計画.mpp` (or `scripts/mpp_reader.py`, the
+   same code on its own) converts the plan to Project's own XML and reads that. With Microsoft
+   Project installed, Project itself writes the XML (most faithful); otherwise MPXJ is used
+   (`pip install mpxj`, needs Java); the output's "Read with:" line says which, and if the first
+   .mpp on a machine fails or stalls, report the error and fall back to the XML route. With neither,
+   the error says so: ask the user to install one, or to Save As > XML in Project and give you
+   the .xml, which needs nothing installed. The Markdown starts with "Needs attention": tasks
+   late against the status date, behind the baseline, past their deadline, and open critical
+   tasks. Then every task with outline number, dates, working days, % done, predecessors
+   (`5SS+2d` = start-to-start with task 5, two working days later), resources and date notes;
+   custom fields under their alias, task notes, resources. `--gantt` adds a mermaid gantt chart.
+   "Late" needs a status date in the plan; without one, say that lateness was not judged.
+   Beyond lateness it reports:
+   - progress against the schedule: % done versus what the baseline dates call for at the
+     status date, and tasks 20 points or more behind it, caught before their finish passes;
+     tasks that should have started and have not; SPI / CPI when the plan carries earned value;
+   - schedule health: tasks with no predecessor or no successor, typed-in date constraints,
+     negative slack, negative lag, tasks over 44 working days, summary tasks with links, actual
+     dates after the status date. These say how far the plan's dates can be trusted;
+   - what sets the finish date: the chain of tasks, each driving the next, behind the last
+     finish, and near-critical tasks (two days of slack or less);
+   - work and cost totals when the plan has them, and resources Project flags as over-allocated.
+
+   ```bash
+   python <skill>/scripts/office2md.py "計画.mpp" --gantt
+   python <skill>/scripts/mpp_reader.py "計画.mpp" --save-xml 計画.xml   # keep the XML for later runs
+   ```
+
+   **Two versions, or a history of saved copies.** `scripts/mpp_history.py old.mpp new.mpp` lists
+   what changed: tasks added, removed, renamed or moved under another summary task, finish dates
+   that moved (largest first), progress, dependencies, resources, and baselines that were reset.
+   Tasks are matched by Project's unique id, so inserted or reordered rows do not count as
+   changes; when the ids do not carry over (a rebuilt plan) it matches by outline path and says
+   so. Give it a folder (or three or more files) for a timeline: one row per snapshot (tasks,
+   % done, late, behind baseline, plan finish), the periods that got worse and why (late tasks
+   grew, plan finish moved, progress stalled, tasks added or removed), tasks added after the
+   start, tasks whose finish moved most often, slips grouped by a custom field such as the
+   department, each milestone's date over time, and trend charts (done versus expected). Snapshots are ordered by the plan's status date; a plan without one is placed and
+   judged at the date in its file name, and a status date far from the file-name date is flagged
+   as probably not updated. Converting a .mpp takes seconds each, so for a year of copies pass
+   `--cache DIR`: a rerun converts only files it has not seen.
+
+   ```bash
+   python <skill>/scripts/mpp_history.py "計画_20261002.mpp" "計画_20261106.mpp"
+   python <skill>/scripts/mpp_history.py ./計画の履歴 --cache ./mpp_cache --out 履歴.md
+   ```
+
 6. **When the dump says `[uncached]` or prints a WARNING about formulas**, the workbook was
    saved by a script and never recalculated. Those cells have no value at all; treat any total
    or comparison that depends on them as unverified and say so in the report. If the value
@@ -275,6 +322,7 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 | docx | struck-through runs as `~~text~~`; SmartArt text with nesting; charts with series values; embedded objects named (content not extracted) | Every other converter drops SmartArt and charts in a Word file to nothing, and a struck-through sentence to an ordinary one. |
 | docx | table-of-contents field collapsed to one line | A stale TOC is a page of headings with wrong page numbers; the live headings follow in the body. |
 | docx | header/footer text, comments, tracked-changes flag | "社外秘" lives in the header. If tracked changes exist, deletions are omitted from the dump; say so if the user is reviewing edits. |
+| mpp | late, behind-baseline, past-deadline and critical tasks first; predecessors with link type and lag; custom fields by alias; task notes | .mpp is an undocumented binary; reading it through Project's own XML export (or MPXJ) keeps the dependencies and baseline that a pasted screenshot or an Excel export loses. |
 | pptx | speaker notes, hidden slides, tables, chart series data, grouped shapes, SmartArt text with nesting, picture alt text (`--images DIR` extracts pictures) | Notes often contain the actual script; hidden slides are usually "do not present" leftovers. Chart values are embedded and recoverable. A process drawn as SmartArt is otherwise lost whole. |
 | pdf | page text, bookmarks, "no text layer" count | Scanned PDFs return nothing; the script tells you how many pages are empty so you can recommend OCR instead of reporting "the PDF is blank". |
 | csv | encoding auto-detect (UTF-8, cp932, UTF-16), delimiter sniff | Japanese CSVs from Excel are cp932; reading them as UTF-8 raises or produces mojibake. |

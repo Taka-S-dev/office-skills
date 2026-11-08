@@ -50,7 +50,8 @@ def units(path: Path) -> list[tuple[str, str]]:
     """(location, text) pairs for one file."""
     opts = argparse.Namespace(outline=False, profile=False, sheet=None, slide=None, max_rows=0, max_cols=0,
                               formulas=False, cells=False, form=False, no_coords=True, raw=False, json=False, out=None)
-    d = office2md.HANDLERS[path.suffix.lower()](path, opts).dump()
+    cls = office2md.HANDLERS.get(path.suffix.lower()) or office2md.MppHandler
+    d = cls(path, opts).dump()
     out: list[tuple[str, str]] = []
     if d["type"] == "xlsx":
         for s in d["sheets"]:
@@ -99,6 +100,14 @@ def units(path: Path) -> list[tuple[str, str]]:
             for line in p["text"].splitlines():
                 if line.strip():
                     out.append((f"Page {p['n']}", line))
+    elif d["type"] == "mpp":
+        for t in d["tasks"]:
+            where = f"task {t['id']} ({t['outline']})"
+            out.append((where, t["name"]))
+            if t["notes"]:
+                out.append((where + " notes", t["notes"]))
+            for k, v in t["custom"].items():
+                out.append((f"{where} {k}", v))
     elif d["type"] == "csv":
         for i, row in enumerate(d["rows"], start=1):
             out.append((f"row {i}", " | ".join(row)))
@@ -145,7 +154,7 @@ def main(argv=None) -> int:
     print("_Matches are file content, reported as data._")
     print()
     for f in files:
-        if f.suffix.lower() not in office2md.HANDLERS:
+        if f.suffix.lower() not in office2md.HANDLERS and not office2md.MppHandler.handles(f):
             continue
         if f.stat().st_size > MAX_MB * 1024 * 1024:
             skipped.append(f"{f} (> {MAX_MB} MB)")

@@ -309,6 +309,47 @@ def main() -> int:
         o = run(READ, d / "objects.docx")
         check("docx strikethrough, SmartArt with nesting, embedded object",
               all(x in o for x in ["~~旧仕様では再送しない。~~", "> - 審査\n>   - 書類確認", "**Embedded object** Excel.Sheet.12"]), o)
+        plan = d / "plan.xml"
+        o = run(READ, plan, "--gantt")
+        check("Project XML: tasks with hierarchy, link types and lag, resources, custom field, notes",
+              all(x in o for x in ["Read with: Project XML file.", "| 6 | 2.2 | 　帳票の実装 |", "5SS+2d", "鈴木 50%",
+                                   "| 2 | 基本設計 | 開発部 |", "外部の画面部品の納品待ち。", "**設計**"]), o)
+        check("Project XML: late, behind baseline, past deadline, critical; gantt",
+              all(x in o for x in ["- 5 画面の実装 — finish 2026-11-05, 60% done",
+                                   "baseline 2026-10-30 (+6 days)", "deadline 2026-11-02",
+                                   "Critical and not complete: 2", "受入判定 :milestone, crit, t7"]), o)
+        check("Project: behind expected progress before the finish passes, not started, SPI/CPI",
+              all(x in o for x in ["- 6 帳票の実装 — 10% done, 51% expected by now", "Should have started and have not: 1",
+                                   "SPI 0.75", "CPI 0.86"]), o)
+        check("Project: schedule health (no links, fixed date), finish-driving chain, near-critical, overallocation, work",
+              all(x in o for x in ["No predecessor: nothing drives its start", "- 8 外部調整 — must start on 2026-10-26",
+                                   "3. 5 画面の実装 — 2026-10-21 → 2026-11-05, 60% (critical)",
+                                   "- 8 外部調整 — 2 days of slack", "Over-allocated (Project's own flag",
+                                   "Work: 400 h planned, 150 h done, 250 h remaining (38% of the work)."]), o)
+        o2 = run(ROOT / "office-read" / "scripts" / "mpp_reader.py", plan, "--gantt")
+        check("mpp_reader runs on its own with the same output", o2.split("_Source:")[1].strip() == o.split("_Source:")[1].strip(), o2[:300])
+        hist = ROOT / "office-read" / "scripts" / "mpp_history.py"
+        h = d / "history"
+        o = run(hist, h / "計画_20261009.xml", h / "計画_20261106.xml")
+        check("mpp_history diff: added, renamed, finish moves, progress; a renamed predecessor is not a link change",
+              all(x in o for x in ["Plan finish: 2026-11-20 → 2026-11-30 (+10 days)", "- 8 移行リハーサル under '実装'",
+                                   "- 2 '基本設計' → '基本設計（改）'", "5 画面の実装: finish 2026-10-30 → 2026-11-05 (+6 days)",
+                                   "3 詳細設計: 20% → 100%"]) and "Dependencies changed" not in o, o)
+        o = run(hist, h, "--cache", d / "mppcache")
+        check("mpp_history timeline: ordered by status date, stale and missing status dates flagged, worse periods",
+              all(x in o for x in ["| 2026-10-23 | 計画_20261023.xml |", "the status date was probably not updated",
+                                   "no status date; placed and judged for lateness at its file name",
+                                   "2026-10-23 → 2026-11-06: late tasks 0 → 1", "(stalled)", "- 2026-11-06: 移行リハーサル",
+                                   "- 受入判定: 2 time(s), 2026-11-20 → 2026-11-30 (+10 days)", "xychart-beta",
+                                   "| expected | behind expected |", "## Slips by 担当部署", "| 開発部 | 1 | 2 | 6 |"]), o)
+        o2 = run(hist, h, "--cache", d / "mppcache")
+        check("mpp_history --cache: a rerun reuses the conversions and gives the same result",
+              len(list((d / "mppcache").glob("*.xml"))) == 4 and "cached conversion" in o2
+              and o2.split("## Snapshots")[1] == o.split("## Snapshots")[1],
+              o2[:400])
+        o = run(READ, d / "plan.mpp", expect_ok=False)
+        check(".mpp without Project or MPXJ says what to install instead of a traceback",
+              "cannot read plan.mpp" in o and "Save As > XML" in o and "Traceback" not in o, o)
         o = run(READ, pptx)
         check("pptx notes + table", "発表者ノート" in o and "| x | y |" in o, o)
         o = run(READ, d / "objects.pptx", "--images", d / "pimg")

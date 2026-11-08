@@ -602,6 +602,88 @@ pic._element.nvPicPr.cNvPr.set("descr", "承認フローの図")
 (out / "fig2.png").unlink()
 op_prs.save(out / "objects.pptx")
 
+# --- plan.xml: Microsoft Project XML (what Project and MPXJ write for a .mpp) ---------------
+def _ptask(uid, name, level, outline, start, finish, dur_h, pct=0, summary=0, milestone=0, critical=0,
+           preds=(), base_finish=None, deadline=None, notes=None, custom=None):
+    links = "".join(f"<PredecessorLink><PredecessorUID>{u}</PredecessorUID><Type>{t}</Type><LinkLag>{lag}</LinkLag>"
+                    "<LagFormat>7</LagFormat></PredecessorLink>" for u, t, lag in preds)
+    base = f"<Baseline><Number>0</Number><Start>{start}</Start><Finish>{base_finish}</Finish></Baseline>" if base_finish else ""
+    extra = (f"<Deadline>{deadline}</Deadline>" if deadline else "") + (f"<Notes>{notes}</Notes>" if notes else "")
+    ext = (f"<ExtendedAttribute><FieldID>188743731</FieldID><Value>{custom}</Value></ExtendedAttribute>" if custom else "")
+    return (f"<Task><UID>{uid}</UID><ID>{uid}</ID><Name>{name}</Name><OutlineNumber>{outline}</OutlineNumber>"
+            f"<OutlineLevel>{level}</OutlineLevel><Start>{start}</Start><Finish>{finish}</Finish>"
+            f"<Duration>PT{dur_h}H0M0S</Duration><PercentComplete>{pct}</PercentComplete><Summary>{summary}</Summary>"
+            f"<Milestone>{milestone}</Milestone><Critical>{critical}</Critical>{extra}{links}{base}{ext}</Task>")
+
+
+plan = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Project xmlns="http://schemas.microsoft.com/project">'
+        "<Name>plan.xml</Name><Title>受注システム更新</Title><Manager>山田</Manager><StartDate>2026-10-01T08:00:00</StartDate>"
+        "<FinishDate>2026-11-30T17:00:00</FinishDate><StatusDate>2026-11-06T17:00:00</StatusDate><MinutesPerDay>480</MinutesPerDay>"
+        "<ExtendedAttributes><ExtendedAttribute><FieldID>188743731</FieldID><FieldName>Text1</FieldName><Alias>担当部署</Alias>"
+        "</ExtendedAttribute></ExtendedAttributes><Tasks>"
+        "<Task><UID>0</UID><ID>0</ID><Name>受注システム更新</Name><OutlineLevel>0</OutlineLevel><Summary>1</Summary>"
+        "<Work>PT400H0M0S</Work><ActualWork>PT150H0M0S</ActualWork><RemainingWork>PT250H0M0S</RemainingWork>"
+        "<BCWS>800</BCWS><BCWP>600</BCWP><ACWP>700</ACWP></Task>"
+        + _ptask(1, "設計", 1, "1", "2026-10-01T08:00:00", "2026-10-20T17:00:00", 112, pct=100, summary=1)
+        + _ptask(2, "基本設計", 2, "1.1", "2026-10-01T08:00:00", "2026-10-09T17:00:00", 56, pct=100, custom="開発部")
+        + _ptask(3, "詳細設計", 2, "1.2", "2026-10-12T08:00:00", "2026-10-20T17:00:00", 56, pct=100, preds=[(2, 1, 0)])
+        + _ptask(4, "実装", 1, "2", "2026-10-21T08:00:00", "2026-11-30T17:00:00", 232, pct=30, summary=1)
+        + _ptask(5, "画面の実装", 2, "2.1", "2026-10-21T08:00:00", "2026-11-05T17:00:00", 96, pct=60, critical=1,
+                 preds=[(3, 1, 0)], base_finish="2026-10-30T17:00:00", deadline="2026-11-02T17:00:00",
+                 notes="外部の画面部品の納品待ち。", custom="開発部")
+        + _ptask(6, "帳票の実装", 2, "2.2", "2026-10-23T08:00:00", "2026-11-20T17:00:00", 160, pct=10, preds=[(5, 3, 9600)])
+        + _ptask(7, "受入判定", 2, "2.3", "2026-11-30T17:00:00", "2026-11-30T17:00:00", 0, milestone=1, critical=1,
+                 preds=[(6, 1, 0)])
+        # a task outside the logic: no links, a typed-in start date, two days of slack, not started
+        + "<Task><UID>8</UID><ID>8</ID><Name>外部調整</Name><OutlineNumber>2.4</OutlineNumber><OutlineLevel>2</OutlineLevel>"
+        "<Start>2026-10-26T08:00:00</Start><Finish>2026-10-28T17:00:00</Finish><Duration>PT24H0M0S</Duration>"
+        "<PercentComplete>0</PercentComplete><Summary>0</Summary><Milestone>0</Milestone><Critical>0</Critical>"
+        "<ConstraintType>2</ConstraintType><ConstraintDate>2026-10-26T08:00:00</ConstraintDate>"
+        "<TotalSlack>9600</TotalSlack></Task>"
+        + "</Tasks><Resources><Resource><UID>0</UID><Name></Name></Resource><Resource><UID>1</UID><Name>佐藤</Name>"
+        "<Type>1</Type><OverAllocated>1</OverAllocated><RemainingWork>PT40H0M0S</RemainingWork></Resource><Resource><UID>2</UID><Name>鈴木</Name><Type>1</Type></Resource></Resources>"
+        "<Assignments><Assignment><TaskUID>5</TaskUID><ResourceUID>1</ResourceUID><Units>1</Units></Assignment>"
+        "<Assignment><TaskUID>6</TaskUID><ResourceUID>2</ResourceUID><Units>0.5</Units></Assignment></Assignments></Project>")
+(out / "plan.xml").write_text(plan, encoding="utf-8")
+(out / "plan.mpp").write_bytes(b"not a real project file")
+
+# --- history/: four saved copies of one plan, file names carry the date ---------------------
+def _plan(status, tasks, finish):
+    st = f"<StatusDate>{status}T17:00:00</StatusDate>" if status else ""
+    return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Project xmlns="http://schemas.microsoft.com/project">'
+            f"<Title>受注システム更新</Title><StartDate>2026-10-01T08:00:00</StartDate><FinishDate>{finish}T17:00:00</FinishDate>"
+            f"{st}<MinutesPerDay>480</MinutesPerDay><Tasks>" + "".join(tasks) + "</Tasks></Project>")
+
+
+def _hist(status, design_name, p3, p5, f5, f6, p6, milestone, extra=False):
+    tasks = [_ptask(1, "設計", 1, "1", "2026-10-01T08:00:00", "2026-10-20T17:00:00", 112, summary=1),
+             _ptask(2, design_name, 2, "1.1", "2026-10-01T08:00:00", "2026-10-09T17:00:00", 56, pct=100),
+             _ptask(3, "詳細設計", 2, "1.2", "2026-10-12T08:00:00", "2026-10-20T17:00:00", 56, pct=p3, preds=[(2, 1, 0)]),
+             _ptask(4, "実装", 1, "2", "2026-10-21T08:00:00", f"{milestone}T17:00:00", 200, summary=1),
+             _ptask(5, "画面の実装", 2, "2.1", "2026-10-21T08:00:00", f"{f5}T17:00:00", 80, pct=p5, preds=[(3, 1, 0)],
+                    custom="開発部")]
+    if f6:
+        tasks.append(_ptask(6, "帳票の実装", 2, "2.2", "2026-10-23T08:00:00", f"{f6}T17:00:00", 120, pct=p6))
+    if extra:
+        tasks.append(_ptask(8, "移行リハーサル", 2, "2.3", "2026-11-16T08:00:00", "2026-11-25T17:00:00", 64))
+    tasks.append(_ptask(7, "受入判定", 2, "2.9", f"{milestone}T17:00:00", f"{milestone}T17:00:00", 0, milestone=1))
+    return _plan(status, tasks, milestone).replace("<Tasks>", "<ExtendedAttributes><ExtendedAttribute><FieldID>188743731"
+                                                  "</FieldID><Alias>担当部署</Alias></ExtendedAttribute></ExtendedAttributes><Tasks>", 1)
+
+
+(out / "history").mkdir(exist_ok=True)
+(out / "history" / "計画_20261009.xml").write_text(
+    _hist("2026-10-09", "基本設計", 20, 0, "2026-10-30", None, 0, "2026-11-20"), encoding="utf-8")
+# status date left at the previous report: should be flagged
+(out / "history" / "計画_20261023.xml").write_text(
+    _hist("2026-10-09", "基本設計", 100, 30, "2026-11-02", "2026-11-18", 0, "2026-11-27"), encoding="utf-8")
+(out / "history" / "計画_20261106.xml").write_text(
+    _hist("2026-11-06", "基本設計（改）", 100, 60, "2026-11-05", "2026-11-20", 10, "2026-11-30", extra=True), encoding="utf-8")
+# no status date: ordered by the file name; nothing moved, so progress stalled
+(out / "history" / "計画_20261113.xml").write_text(
+    _hist(None, "基本設計（改）", 100, 60, "2026-11-05", "2026-11-20", 10, "2026-11-30", extra=True), encoding="utf-8")
+
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

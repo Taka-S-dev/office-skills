@@ -6,13 +6,14 @@ SKILL.md 形式を読むエージェントならどれでも使え、スクリ�
 
 ```
 officeskill/
-├── office-read/        読む。xlsx docx pptx pdf csv eml msg zip 7z → Markdown / JSON
+├── office-read/        読む。xlsx docx pptx pdf csv eml msg zip 7z mpp → Markdown / JSON
 │   ├── SKILL.md        エージェント向けの手順（英語）
 │   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
 │   │                   / mail_digest（フォルダ内メールの時系列）/ unpack（zip・7z の展開）
 │   │                   / md_crosscheck（Word・Excel → md の照合と目視確認）/ diagram_lint（mermaid・PlantUML の構文検査）
 │   │                   （検査の部品は review_checks、図形の読み取りは xlsx_drawing）
+│   │                   / mpp_reader（MS Project の計画。単体でも動く）/ mpp_history（2 版の差分、1 年分の推移）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -33,6 +34,13 @@ python tests/smoke_test.py
 
 2 つはセットで入れる。office-edit は office-read のスクリプトと profiles を参照する。
 
+MS Project の .mpp を読むには、次のどちらかが要る（無くても、Project で「XML 形式で保存」した .xml は読める）。
+
+- Microsoft Project が入っている PC: 追加のインストールは要らない。Project 自身に XML を書き出させる（最も忠実な経路）。
+- 入っていない PC: `pip install mpxj`（Java が必要。MPXJ は LGPL のライブラリで、取り込まずに呼ぶだけ）。
+
+どちらで読んだかは出力の `Read with:` 行に出る。
+
 コピー先は既定で `~/.claude/skills`。別のエージェントを使う場合は引数でそのスキルフォルダを渡す。
 
 ```powershell
@@ -51,6 +59,9 @@ python tests/smoke_test.py
 ```bash
 python office-read/scripts/office2md.py 仕様書.docx --out 仕様書.md --images ./fig   # 番号付き見出し・脚注・図を保った md
 python office-read/scripts/md_crosscheck.py 仕様書.docx --out-dir ./md             # pandoc 等と突き合わせ、差分を review.md に
+python office-read/scripts/office2md.py 計画.mpp --gantt                          # 遅れ・予定進捗との差・計画の品質・終了日を決める連なり・gantt 図
+python office-read/scripts/mpp_history.py 旧.mpp 新.mpp                         # 追加・削除・日付のずれ・進捗の差分
+python office-read/scripts/mpp_history.py ./計画の履歴 --cache ./mpp_cache          # 1 年分: 悪化した時期、後から増えたタスク、マイルストーンの推移
 python office-read/scripts/office2md.py 売上.xlsx --outline          # 構造だけ
 python office-read/scripts/office2md.py 売上.xlsx --sheet 明細 --max-rows 0
 python office-read/scripts/office2md.py 売上.xlsx --sheet メイン --cells   # メイン!C4 = 12 の形で 1 セル 1 行
