@@ -128,6 +128,17 @@ r2 = OxmlElement("w:r"); dt = OxmlElement("w:delText"); dt.text = "削除され�
 p3 = rd.add_paragraph("この数値は要確認です。")
 rd.add_comment(runs=p3.runs, text="出典を追記してください", author="reviewer", initials="rv")
 rd.save(out / "review.docx")
+# a table with a header spanning two columns and groups spanning rows, as Word stores them
+md_ = docx.Document()
+mt = md_.add_table(rows=4, cols=4)
+for (r, c), v in {(0, 0): "区分", (0, 1): "項目", (0, 3): "備考", (1, 1): "名称", (1, 2): "桁数",
+                  (2, 0): "基本", (2, 1): "受注番号", (2, 2): "10", (2, 3): "必須",
+                  (3, 1): "受注日", (3, 2): "8", (3, 3): "任意"}.items():
+    mt.cell(r, c).text = v
+mt.cell(0, 1).merge(mt.cell(0, 2))
+mt.cell(0, 0).merge(mt.cell(1, 0))
+mt.cell(2, 0).merge(mt.cell(3, 0))
+md_.save(out / "merged.docx")
 
 TCNS = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
 rw = openpyxl.Workbook(); rws = rw.active; rws.title = "メイン"; rws["B2"] = 120; rws["C2"] = "メモ"

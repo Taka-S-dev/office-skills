@@ -1170,6 +1170,8 @@ class DocxHandler(Handler):
         self._notes = self._load_notes("word/footnotes.xml", "footnote") | self._load_notes("word/endnotes.xml", "endnote")
         self._images: list[dict] = []
         self._objects: list[dict] = []
+        self._changes: dict[str, dict] = {}
+        self._comment_cache: dict[str, dict] | None = None
         return doc
 
     # -- numbering ------------------------------------------------------------------------
@@ -1461,7 +1463,34 @@ class DocxHandler(Handler):
                 if text:
                     boxes.append(text)
                 continue
-            if tag in (W + "del", W + "moveFrom", W + "instrText", W + "delText"):
+            if tag in (W + "instrText", W + "delText"):
+                continue
+            if tag in (W + "ins", W + "moveTo", W + "del", W + "moveFrom"):
+                # tracked changes in CriticMarkup: {++inserted++} {--deleted--}; --accept-changes
+                # gives the text as it reads once every change is accepted
+                deleted = tag in (W + "del", W + "moveFrom")
+                if deleted:
+                    text = "".join(x.text or "" for x in child.iter(W + "delText", W + "t"))
+                else:
+                    inner: list[str] = []
+                    self._collect(child, inner, boxes, depth)
+                    text = "".join(inner)
+                self._note_change(child, "deleted" if deleted else "inserted", text)
+                if getattr(self.opts, "accept_changes", False):
+                    if not deleted:
+                        parts.append(text)
+                elif text.strip():
+                    clean = text.replace("{", "(").replace("}", ")")
+                    parts.append(f"{{--{clean}--}}" if deleted else f"{{++{clean}++}}")
+                else:
+                    parts.append(text if not deleted else "")
+                continue
+            if tag == W + "commentReference":
+                c = self._comment_map().get(child.get(W + "id") or "")
+                if c and not getattr(self.opts, "accept_changes", False):
+                    who = re.sub(r"[{}<>]", " ", c["author"] or "")
+                    body = re.sub(r"[{}<>]", " ", re.sub(r"\s+", " ", c["text"]).strip())[:500]
+                    parts.append(f"{{>>{who}: {body}<<}}")
                 continue
             if tag == W + "hyperlink":
                 # keep the URL: a spec's "related documents" section is useless without it
@@ -1600,7 +1629,23 @@ class DocxHandler(Handler):
         parts: list[str] = []
         boxes: list[str] = []
         self._collect(paragraph._p, parts, boxes)
-        return "".join(parts), boxes
+        # Word splits one edit into many runs: "{++令和８年８月3++}{++1++}{++日++}" reads as one insertion
+        text = "".join(parts).replace("++}{++", "").replace("--}{--", "")
+        return text, boxes
+
+    def _note_change(self, el, kind: str, text: str) -> None:
+        """Remember a tracked change for the list at the end (one entry per change id)."""
+        W = lambda n: self._q("w", n)  # noqa: E731
+        cid = el.get(W("id")) or str(len(self._changes))
+        if cid in self._changes or not text.strip():
+            return
+        self._changes[cid] = {"kind": kind, "author": re.sub(r"\s+", " ", el.get(W("author")) or "").strip()[:80],
+                              "date": (el.get(W("date")) or "")[:10], "text": re.sub(r"\s+", " ", text).strip()[:300]}
+
+    def _comment_map(self) -> dict[str, dict]:
+        if self._comment_cache is None:
+            self._comment_cache = {c["id"]: c for c in self._comments()}
+        return self._comment_cache
 
     def _style_name(self, paragraph) -> str:
         try:
@@ -1659,7 +1704,9 @@ class DocxHandler(Handler):
             prev = None
             for cell in row.cells:
                 if cell._tc is prev:          # python-docx repeats horizontally merged cells
-                    cells.append("")
+                    # in a header row the spanning title names each column under it ("項目 | 項目"
+                    # over "名称 | 桁数"); in a body row the repeat would only duplicate text
+                    cells.append(cells[-1] if cells and (not rows or self._header_row(row)) else "")
                 else:
                     lines = []
                     for p in cell.paragraphs:
@@ -1674,6 +1721,10 @@ class DocxHandler(Handler):
             rows.append(cells)
         return rows
 
+    def _header_row(self, row) -> bool:
+        trPr = row._tr.find(self._q("w", "trPr"))
+        return trPr is not None and trPr.find(self._q("w", "tblHeader")) is not None
+
     def _comments(self) -> list[dict]:
         try:
             with zipfile.ZipFile(self.path) as z:
@@ -1686,7 +1737,7 @@ class DocxHandler(Handler):
         parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
         root = etree.fromstring(xml, parser)
         W = lambda n: self._q("w", n)  # noqa: E731
-        return [{"author": c.get(W("author")), "date": c.get(W("date")),
+        return [{"id": c.get(W("id")) or "", "author": c.get(W("author")), "date": c.get(W("date")),
                  "text": "".join(t.text or "" for t in c.iter(W("t")))} for c in root.findall(W("comment"))]
 
     def _has_tracked_changes(self) -> bool:
@@ -1770,6 +1821,7 @@ class DocxHandler(Handler):
         return {"file": str(self.path), "type": "docx", "blocks": blocks,
                 "headers": sorted(set(headers)), "footers": sorted(set(footers)),
                 "comments": self._comments(), "tracked_changes": self._has_tracked_changes(),
+                "changes": list(self._changes.values()),
                 "notes": self._notes, "images": self._images}
 
     def to_markdown(self, data: dict) -> str:
@@ -1788,7 +1840,18 @@ class DocxHandler(Handler):
             return "\n".join(out)
 
         if data["tracked_changes"]:
-            out.append("> This document has tracked changes. Insertions are shown; deletions are omitted.\n")
+            ch = data.get("changes", [])
+            if getattr(self.opts, "accept_changes", False):
+                out.append("> This document has tracked changes; shown as if all were accepted (--accept-changes).\n")
+            else:
+                ins = sum(1 for c in ch if c["kind"] == "inserted")
+                authors = sorted({c["author"] for c in ch if c["author"]})
+                out.append(f"> Tracked changes are marked in the text: {{++inserted++}} and {{--deleted--}} "
+                           f"({ins} insertion(s), {len(ch) - ins} deletion(s)"
+                           + (f" by {', '.join(md_escape(a) for a in authors[:5])}" if authors else "")
+                           + "); comments appear as {>>author: text<<} where they are anchored. The current text "
+                           "is the text without the {--...--} parts; every change is listed under Tracked changes "
+                           "at the end. --accept-changes prints the accepted text instead.\n")
         if data["headers"]:
             out.append("> Header: " + " / ".join(data["headers"]))
         if data["footers"]:
@@ -1830,6 +1893,13 @@ class DocxHandler(Handler):
             out.append("## Notes")
             for nid, text in data["notes"].items():
                 out.append(f"[^{nid}]: {md_para(text)}")
+            out.append("")
+        if data.get("changes") and not getattr(self.opts, "accept_changes", False):
+            out += ["## Tracked changes", md_table(
+                [[c["date"], md_escape(c["author"]), c["kind"], md_escape(c["text"])] for c in data["changes"][:300]],
+                header=["date", "author", "change", "text"])]
+            if len(data["changes"]) > 300:
+                out.append(f"_… {len(data['changes']) - 300} more_")
             out.append("")
         if data["comments"]:
             out += ["## Comments", md_table(
@@ -2546,6 +2616,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
     ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
+    ap.add_argument("--accept-changes", action="store_true",
+                    help="docx: the text as if every tracked change were accepted, without change or comment marks")
     ap.add_argument("--mpp-engine", choices=["auto", "project", "mpxj"], default="auto",
                     help="mpp: convert with Microsoft Project (most faithful) or MPXJ; auto tries Project first")
     ap.add_argument("--gantt", action="store_true", help="mpp: add a mermaid gantt chart")

@@ -34,7 +34,8 @@ def dump(path: Path, a) -> dict:
     cls = office2md.HANDLERS.get(ext)
     if cls is None:
         sys.exit(f"[office_diff] unsupported extension {ext}")
-    opts = argparse.Namespace(outline=False, profile=False, sheet=a.sheet, slide=None, max_rows=50000, max_cols=1000,
+    # accepted text: a diff of two versions compares what each says, not its change marks
+    opts = argparse.Namespace(accept_changes=True, outline=False, profile=False, sheet=a.sheet, slide=None, max_rows=50000, max_cols=1000,
                               formulas=a.formulas, cells=False, form=False, no_coords=True, raw=True,
                               json=False, out=None)   # raw: compare stored values, not display strings
     return cls(path, opts).dump()

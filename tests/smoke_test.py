@@ -80,6 +80,16 @@ def main() -> int:
         o = run(rv, d / "review.docx")
         check("office_review docx tracked changes + comment",
               "| 2 | insert | reviewer |" in o and "| 2 | delete | reviewer |" in o and "出典を追記してください" in o, o)
+        o = run(READ, d / "review.docx")
+        check("docx tracked changes and comments marked in place (CriticMarkup) with a change list",
+              all(x in o for x in ["{++追加された文++}", "{--削除された文--}", "{>>reviewer: 出典を追記してください<<}",
+                                   "## Tracked changes", "| inserted | 追加された文 |"]), o)
+        o = run(READ, d / "review.docx", "--accept-changes")
+        check("docx --accept-changes prints the accepted text without marks",
+              "追加された文" in o and "削除された文" not in o and "{++" not in o and "{>>" not in o, o)
+        o = run(READ, d / "merged.docx")
+        check("docx header cell spanning two columns names both; groups spanning rows repeat",
+              "| 区分 | 項目 | 項目 | 備考 |" in o and "| 基本 | 受注日 | 8 | 任意 |" in o, o)
         o = run(rv, d / "review.xlsx")
         check("office_review xlsx threaded + legacy", "| メイン!B2 | reviewer |" in o and "reply to reviewer" in o and "| メイン!C2 | taro |" in o, o)
         o = run(rv, d / "review.pptx")

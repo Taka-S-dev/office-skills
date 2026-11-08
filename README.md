@@ -91,6 +91,7 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
 変換そのものは `office2md.py` で済むが、「最も正確な 1 本」を作るときは `md_crosscheck.py` を使う。
 
 1. `md_crosscheck.py 仕様書.docx --out-dir ./md` を実行。`仕様書.md`（自前変換。見出しの自動番号、脚注、
+   変更履歴の印（`{++追加++}` `{--削除--}`）とコメントの位置、
    図の alt、テキストボックス、リンクを保持）と、pandoc / markitdown が入っていればそれらの変換結果、
    そして `仕様書.review.md` ができる。
 2. 数式の LaTeX 化、太字、リンクのうち、一意に当たるものはツールが自動で `仕様書.md` に取り込む。
