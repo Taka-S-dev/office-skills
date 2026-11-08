@@ -11,6 +11,7 @@ officeskill/
 │   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
 │   │                   / mail_digest（フォルダ内メールの時系列）/ unpack（zip・7z の展開）
+│   │                   / md_crosscheck（Word → md を pandoc 等と突き合わせて差分を列挙）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -48,6 +49,7 @@ python tests/smoke_test.py
 
 ```bash
 python office-read/scripts/office2md.py 仕様書.docx --out 仕様書.md --images ./fig   # 番号付き見出し・脚注・図を保った md
+python office-read/scripts/md_crosscheck.py 仕様書.docx --out-dir ./md             # pandoc 等と突き合わせ、差分を review.md に
 python office-read/scripts/office2md.py 売上.xlsx --outline          # 構造だけ
 python office-read/scripts/office2md.py 売上.xlsx --sheet 明細 --max-rows 0
 python office-read/scripts/office2md.py 売上.xlsx --sheet メイン --cells   # メイン!C4 = 12 の形で 1 セル 1 行
@@ -71,6 +73,22 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
 ```
 
 各スクリプトは `--help` で全オプションが出る。
+
+### Word の仕様書をエージェント向けの md にする
+
+変換そのものは `office2md.py` で済むが、「最も正確な 1 本」を作るときは `md_crosscheck.py` を使う。
+
+1. `md_crosscheck.py 仕様書.docx --out-dir ./md` を実行。`仕様書.md`（自前変換。見出しの自動番号、脚注、
+   図の alt、テキストボックス、リンクを保持）と、pandoc / markitdown が入っていればそれらの変換結果、
+   そして `仕様書.review.md` ができる。
+2. 数式の LaTeX 化、太字、リンクのうち、一意に当たるものはツールが自動で `仕様書.md` に取り込む。
+   `review.md` の先頭に `Status: READY` か `NEEDS REVIEW` が出て、残りの項目（参照側にあって自前に無い文、
+   無いリンク、表の形の違い、見出しの違い、判断が要る太字や数式）が列挙される。エージェントはそれを見て手直しする。
+3. 直したら再実行し、READY になるか、残るのが意図した差分（畳んだ目次、pandoc が落とす表題、自前だけの番号）
+   だけになれば完成。最終の Status と残した差分の理由を報告する。
+
+pandoc 単体の出力を使わないのは、見出しの自動番号（「3.2.1 を参照」の辿り先）を pandoc が落とすため。
+pandoc が無い環境でも 1 の md は作られ、review に「照合相手なし」と出る。
 
 ### パスワード付きの zip / 7z
 

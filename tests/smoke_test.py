@@ -151,10 +151,30 @@ def main() -> int:
         o = run(READ, spec, "--images", d / "img")
         check("spec.docx: nested bullets, ordered list, footnote, figure+alt, caption, text box, TOC, equation",
               all(x in o for x in ["- 任意項目\n  - 省略可能な拡張項目", "1. 注文を受け付ける\n2. 在庫を確認する",
-                                   "[^1]", "[^1]: 旧版（第2版）の形式は対象外。", "figure-001.png — データの全体構成図",
+                                   "[^1]", "[^1]: 旧版（第2版）の形式は対象外。",
+                                   "figure-001.png 1x1 (placeholder image, no visual content) — データの全体構成図",
                                    "*図 1 データの構成*", "> **Text box:** 注記: 改訂時は見出し部も見直すこと",
                                    "(table of contents field, 3 entries)", "T = P + N × 4"])
               and (d / "img" / "figure-001.png").exists(), o)
+        check("spec.docx keeps hyperlink URLs", "[注文 API 仕様 v3](https://example.com/spec/order-api-v3)" in o, o)
+        if shutil.which("pandoc"):
+            o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
+            rv = (d / "xc" / "spec.review.md").read_text(encoding="utf-8")
+            pm = (d / "xc" / "spec.md").read_text(encoding="utf-8")
+            check("md_crosscheck: nothing in pandoc missing from the primary",
+                  "## Content in pandoc not found in the primary (0)" in rv and (d / "xc" / "spec.md").exists(), o + rv)
+            check("md_crosscheck: safe fixes applied (equation to LaTeX, bold) and status block present",
+                  "$$" in pm and "**30日以内に入荷**" in pm and "**Status: " in rv and "Applied automatically" in rv, rv + pm)
+            check("md_crosscheck: READY when only a reference's dropped title differs",
+                  "**Status: READY**" in rv, rv)
+            check("md_crosscheck: figure path relative to the .md with forward slashes, size shown",
+                  "[figure: spec_figures/figure-001.png 1x1 (placeholder image, no visual content)" in pm, pm)
+            (d / "xc" / "spec.md").write_text(pm + "\n手で追記した行。\n", encoding="utf-8")
+            o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
+            check("md_crosscheck: a rerun keeps manual edits",
+                  "reusing existing spec.md" in o and "手で追記した行。" in (d / "xc" / "spec.md").read_text(encoding="utf-8"), o)
+        else:
+            print("  [skip] md_crosscheck (pandoc not installed)")
         o = run(READ, pptx)
         check("pptx notes + table", "発表者ノート" in o and "| x | y |" in o, o)
         o = run(READ, csv)

@@ -1132,6 +1132,25 @@ class DocxHandler(Handler):
                 continue
             if tag in (W + "del", W + "moveFrom", W + "instrText", W + "delText"):
                 continue
+            if tag == W + "hyperlink":
+                # keep the URL: a spec's "related documents" section is useless without it
+                inner: list[str] = []
+                self._collect(child, inner, boxes, depth)
+                text = "".join(inner)
+                rid = child.get(self._q("r", "id"))
+                url = ""
+                if rid and rid in self._doc.part.rels and self._doc.part.rels[rid].is_external:
+                    url = self._doc.part.rels[rid].target_ref
+                url = re.sub(r"[\s<>()`\x00-\x1f]", "", url)[:500]
+                if url and text.strip() and url.lower().startswith(("http://", "https://", "mailto:")):
+                    parts.append(f"[{text.strip()}]({url})")
+                elif url and text.strip():
+                    # file: and other schemes stay visible as inert text: a share path is useful to
+                    # a reader, but a live link to it could leak credentials when followed
+                    parts.append(f"{text.strip()} (`{url}`)")
+                else:
+                    parts.append(text)
+                continue
             if tag == W + "t" or tag == self._q("m", "t"):
                 parts.append(child.text or "")
             elif tag == W + "tab":

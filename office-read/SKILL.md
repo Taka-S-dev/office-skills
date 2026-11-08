@@ -73,6 +73,29 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    answer, the label's cell and the value's cell. Pairing is positional, so check an unexpected
    pair against the grid before quoting it.
 
+5a. **Turning a Word specification into Markdown for another agent to read.** Do not hand over
+   the first dump. Run `scripts/md_crosscheck.py 仕様書.docx --out-dir ./md`: it writes
+   `仕様書.md` from office2md (automatic heading numbers, notes, figures with alt text, text
+   boxes, links), converts the same file with pandoc (and markitdown) when they are installed,
+   folds in the safe fixes by itself (an equation as LaTeX, a bold phrase, a link, each only on
+   an exact single match), and writes `仕様書.review.md`. Its first line is the verdict:
+   `Status: READY` means no reference has content, links or headings the primary lacks and the
+   tables match in shape; `NEEDS REVIEW` lists what remains: missing sentences, links, tables
+   whose shape differs, headings that differ, plus optional polish (bold, equations it could not
+   place). Work through the remaining items, edit `仕様書.md`, and rerun: a rerun checks the
+   file as it is now, edits included (`--fresh` throws them away and converts again). Stop when
+   the status is READY or every remaining item is one you decided to keep (a collapsed table of
+   contents, a title a reference moved to metadata or plain text, numbering only the primary
+   has). Report the final status and those decisions. Figure paths in the Markdown are relative
+   to its own folder, so the folder can be moved as a unit; a figure marked "placeholder image"
+   is a 1-2 px stub whose meaning is only in its alt text and caption, and the reader should be
+   told so. Without pandoc the status says NO REFERENCE and the Markdown is still the best
+   single conversion available; say that in the report.
+
+   ```bash
+   python <skill>/scripts/md_crosscheck.py "仕様書.docx" --out-dir ./md
+   ```
+
 5b. **"Why is this total wrong?" / "What breaks if I change B3?"** Use `scripts/xlsx_deps.py`
    instead of reading formulas one by one. It prints the tree of cells a formula is computed
    from (precedents), or every formula that uses a cell (dependents), across sheets and
