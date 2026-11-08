@@ -12,6 +12,7 @@ officeskill/
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
 │   │                   / mail_digest（フォルダ内メールの時系列）/ unpack（zip・7z の展開）
 │   │                   / md_crosscheck（Word・Excel → md の照合と目視確認）/ diagram_lint（mermaid・PlantUML の構文検査）
+│   │                   （検査の部品は review_checks、図形の読み取りは xlsx_drawing）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
 │   ├── SKILL.md
@@ -82,10 +83,15 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
    図の alt、テキストボックス、リンクを保持）と、pandoc / markitdown が入っていればそれらの変換結果、
    そして `仕様書.review.md` ができる。
 2. 数式の LaTeX 化、太字、リンクのうち、一意に当たるものはツールが自動で `仕様書.md` に取り込む。
-   `review.md` の先頭に `Status: READY` か `NEEDS REVIEW` が出て、残りの項目（参照側にあって自前に無い文、
-   無いリンク、表の形の違い、見出しの違い、判断が要る太字や数式）が列挙される。エージェントはそれを見て手直しする。
+   `review.md` の先頭に `Status: READY` か `NEEDS REVIEW` と、検査ごとの結果（ok / FAIL / not run）が出る。
+   検査は、md がどの版のファイルから作られたか、参照側にあって自前に無い文（同じ文が何回出るかも数える）、
+   リンク、見出し、表の形、目視確認（中身のある図、SmartArt、グラフ、埋め込みオブジェクト）。
+   別の見出しの下に移った文や、判断が要る太字や数式は、止めずに一覧だけ出す。エージェントはそれを見て手直しする。
 3. 直したら再実行し、READY になるか、残るのが意図した差分（畳んだ目次、pandoc が落とす表題、自前だけの番号）
    だけになれば完成。最終の Status と残した差分の理由を報告する。
+
+READY は「ここに挙げた検査の範囲で未解決が無い」という意味で、元の文書と意味が同じことの証明ではない。
+md の先頭の `_Source:` 行に元ファイルのハッシュが入り、ファイルが変わると古い md は FAIL になる。
 
 pandoc 単体の出力を使わないのは、見出しの自動番号（「3.2.1 を参照」の辿り先）を pandoc が落とすため。
 pandoc が無い環境でも 1 の md は作られ、review に「照合相手なし」と出る。
@@ -105,9 +111,14 @@ pandoc が無い環境でも 1 の md は作られ、review に「照合相手�
   編集可能な形でも残る。md の中の mermaid / PlantUML は構文を検査し、壊れていれば READY にしない
   （`diagram_lint.py` 単体でも使える。`--render-diagrams` を付け、PlantUML か mermaid-cli が入っていれば
   実際に描画して確かめる。PlantUML は砂箱設定で動かす）。
+- SmartArt の文字（階層付き）、古い形式（.xls 由来）のテキストボックス、グラフだけのシート、印刷用の
+  ヘッダー・フッター、取り消し線（`~~削除~~`）も出す。
 - 各シートを `<名前>_sheets/sheetNN.pdf` に描画し、review.md に「ブックの文字で md に無いもの」と
-  「目視で確認すべき図・グラフ・画像」を出す。エージェントは PDF を見て md を直し、確認したものの ID を
-  `<名前>.checked` に書く。全部そろえば READY。
+  「目視で確認すべき図・グラフ・画像・SmartArt・読めない部品」を出す。文字はシートごとに、出てくる回数まで
+  照合する。1 や ○ のような短い値は、同じ行の項目名と並んでいるかで確かめる。
+- エージェントは PDF を見て md を直し、確認したものの ID（`シーケンス#diagram@1a2b3c4d` のように、内容の指紋付き）
+  を `<名前>.checked` に書く。元ファイルの図が変わると ID が変わり、その図だけ確認し直しになる。
+  全部そろえば READY。描画は同じ版のファイルの間だけ使い回す。
 
 ### パスワード付きの zip / 7z
 

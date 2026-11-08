@@ -13,10 +13,12 @@ Excel COM / LibreOffice are optional; recalc and topdf are skipped when neither 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -188,7 +190,13 @@ def main() -> int:
         o = run(xc, dg, "--out-dir", d / "xx", "--no-render")
         rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
         check("xlsx cross-check: nothing missing, 4 visual checks open",
-              "0 missing from the Markdown" in rv and "Visual checks: 0 of 4 confirmed" in rv and "NEEDS REVIEW" in rv, rv)
+              "[ok] Text: " in rv and "Visual checks: 0 of 4 confirmed" in rv and "NEEDS REVIEW" in rv, rv)
+        ids = re.findall(r"`([^`]+@[0-9a-f]{8})`", rv.split("## Visual checks", 1)[1])
+        (d / "xx" / "diagram.checked").write_text("シーケンス#diagram ok\nグラフ#chart1@00000000 ok\n", encoding="utf-8")
+        run(xc, dg, "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("visual check ids match exactly, with the content fingerprint (no prefix, no old id)",
+              "Visual checks: 0 of 4 confirmed, 2 recorded for content that has since changed" in rv, rv[:1500])
         dio_text = (d / "xx" / "diagram.drawio").read_text(encoding="utf-8")
         check("draw.io chart placeholder carries the series values", "売上: 1月=120, 2月=80, 3月=150" in dio_text, dio_text[:300])
         md = (d / "xx" / "diagram.md").read_text(encoding="utf-8")
@@ -197,11 +205,51 @@ def main() -> int:
         rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
         check("xlsx cross-check catches text dropped from the Markdown", "- レイアウト!B4: 日付" in rv, rv)
         (d / "xx" / "diagram.md").write_text(md, encoding="utf-8")
-        (d / "xx" / "diagram.checked").write_text(
-            "シーケンス#diagram ok\nフロー#diagram ok\nグラフ#chart1 ok\nグラフ#picture1 red box\n", encoding="utf-8")
+        (d / "xx" / "diagram.checked").write_text("".join(f"{i}  looked at the rendered sheet\n" for i in ids),
+                                                    encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")
         rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
         check("xlsx cross-check READY once text is complete and visual checks are recorded", "**Status: READY**" in rv, rv)
+        # an edited mermaid arrow is listed against the reconstruction
+        m = re.search(r"^(\s*)(\w+)->>(\w+): (.+)$", md, re.M)
+        (d / "xx" / "diagram.md").write_text(
+            md.replace(m.group(0), f"{m.group(1)}{m.group(3)}->>{m.group(2)}: {m.group(4)}", 1), encoding="utf-8")
+        run(xc, dg, "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("a reversed arrow in the Markdown is listed as an edit of the reconstruction",
+              "## Diagram edits since the reconstruction (1)" in rv and "the drawing had it the other way" in rv, rv)
+        (d / "xx" / "diagram.md").write_text(md, encoding="utf-8")
+        # the workbook changes: the Markdown is reported stale, only the changed diagram reopens
+        (d / "v2").mkdir()
+        with zipfile.ZipFile(dg) as zin, zipfile.ZipFile(d / "v2" / "diagram.xlsx", "w", zipfile.ZIP_DEFLATED) as zout:
+            for n in zin.namelist():
+                b = zin.read(n)
+                zout.writestr(n, b.replace("在庫数".encode(), "在庫件数".encode()) if n == "xl/drawings/drawing91.xml" else b)
+        run(xc, d / "v2" / "diagram.xlsx", "--out-dir", d / "xx", "--no-render")
+        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        check("a changed workbook makes the Markdown stale and reopens only the changed visual check",
+              "[FAIL] Source: the Markdown was made from another version" in rv
+              and "Visual checks: 3 of 4 confirmed, 1 recorded" in rv and "- [ ] `シーケンス#diagram@" in rv
+              and "NEEDS REVIEW" in rv, rv[:2500])
+        # objects.xlsx: SmartArt, legacy text box, chart sheet, printed header, strikethrough
+        ob = d / "objects.xlsx"
+        o = run(READ, ob)
+        check("xlsx reads SmartArt in order with nesting, a legacy text box, a chart sheet, the printed header, ~~struck~~",
+              all(x in o for x in ["  - 受付\n  - 審査\n    - 書類確認\n  - 承認", "旧形式の注記: 単位は mm",
+                                   "## Chart sheet: グラフ専用", "数量の推移", "Printed header: 文書番号 DOC-001 第2版",
+                                   "~~旧品番~~"]) and "表示用" not in o, o)
+        run(xc, ob, "--out-dir", d / "xo", "--no-render")
+        rv = (d / "xo" / "objects.review.md").read_text(encoding="utf-8")
+        check("SmartArt and the chart sheet become visual checks", "`部品#smartart1@" in rv and "`グラフ専用#chart1@" in rv
+              and "[ok] Text: " in rv, rv[:2000])
+        om = (d / "xo" / "objects.md").read_text(encoding="utf-8")
+        (d / "xo" / "objects.md").write_text(om.replace("| 未定 |", "|  |", 1).replace("| ボルト | 2 |", "| ボルト | 3 |"),
+                                             encoding="utf-8")
+        run(xc, ob, "--out-dir", d / "xo", "--no-render")
+        rv = (d / "xo" / "objects.review.md").read_text(encoding="utf-8")
+        check("text check catches one of two equal values removed and a short number changed",
+              "未定 (2 times in the sheet, 1 in its section)" in rv
+              and "- 部品!B2: 2 (not found on a line with its row label 'ボルト')" in rv, rv[:2500])
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",
@@ -238,10 +286,34 @@ def main() -> int:
             o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
             check("md_crosscheck: a rerun keeps manual edits",
                   "reusing existing spec.md" in o and "手で追記した行。" in (d / "xc" / "spec.md").read_text(encoding="utf-8"), o)
+            od = d / "objects.docx"
+            run(xc, od, "--out-dir", d / "xd", "--no-markitdown", "--no-render")
+            rv = (d / "xd" / "objects.review.md").read_text(encoding="utf-8")
+            check("Word SmartArt and embedded object are visual checks; content check passes",
+                  "`smartart1@" in rv and "`embedded1@" in rv and "[ok] Content against pandoc" in rv
+                  and "NEEDS REVIEW" in rv, rv[:2500])
+            wm = (d / "xd" / "objects.md").read_text(encoding="utf-8")
+            rep = "応答がない場合は三回まで再送する。"
+            cut = wm.rindex(rep)
+            wm2 = wm[:cut] + wm[cut + len(rep):]
+            wm2 = wm2.replace("終了要求の後は再送しない。\n", "").replace(
+                "送信の前に状態を確認する。\n", "送信の前に状態を確認する。\n\n終了要求の後は再送しない。\n")
+            (d / "xd" / "objects.md").write_text(wm2, encoding="utf-8")
+            run(xc, od, "--out-dir", d / "xd", "--no-markitdown", "--no-render")
+            rv = (d / "xd" / "objects.review.md").read_text(encoding="utf-8")
+            check("Word cross-check catches a repeated sentence lost and lists one moved to another heading",
+                  "1 repeated fewer times" in rv and "(2 times in pandoc, 1 in the primary)" in rv
+                  and "## Content under a different heading than in pandoc (1)" in rv, rv[:3000])
         else:
             print("  [skip] md_crosscheck (pandoc not installed)")
+        o = run(READ, d / "objects.docx")
+        check("docx strikethrough, SmartArt with nesting, embedded object",
+              all(x in o for x in ["~~旧仕様では再送しない。~~", "> - 審査\n>   - 書類確認", "**Embedded object** Excel.Sheet.12"]), o)
         o = run(READ, pptx)
         check("pptx notes + table", "発表者ノート" in o and "| x | y |" in o, o)
+        o = run(READ, d / "objects.pptx", "--images", d / "pimg")
+        check("pptx SmartArt text and picture alt text, picture extracted",
+              "> - 審査\n>   - 書類確認" in o and "— 承認フローの図" in o and any((d / "pimg").glob("figure-*.png")), o)
         o = run(READ, csv)
         check("csv cp932 decoded", "太郎" in o, o)
         o = run(READ, xlsx, "--json")

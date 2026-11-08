@@ -78,11 +78,24 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    `仕様書.md` from office2md (automatic heading numbers, notes, figures with alt text, text
    boxes, links), converts the same file with pandoc (and markitdown) when they are installed,
    folds in the safe fixes by itself (an equation as LaTeX, a bold phrase, a link, each only on
-   an exact single match), and writes `仕様書.review.md`. Its first line is the verdict:
-   `Status: READY` means no reference has content, links or headings the primary lacks and the
-   tables match in shape; `NEEDS REVIEW` lists what remains: missing sentences, links, tables
-   whose shape differs, headings that differ, plus optional polish (bold, equations it could not
-   place). Work through the remaining items, edit `仕様書.md`, and rerun: a rerun checks the
+   an exact single match), and writes `仕様書.review.md`. Its first line is the verdict, followed
+   by one line per check marked ok, FAIL or not run:
+   - Source: the Markdown's `_Source:` line names the file version (SHA-256) it was made from;
+     a reused Markdown made from another version fails until regenerated with `--fresh`.
+   - Content: every sentence a reference has is in the primary, as many times as the reference
+     has it (a specification repeats a rule per case on purpose; losing one repeat is a loss),
+     plus links and headings.
+   - Table shapes: cell counts per table agree.
+   - Visual checks: each figure with content, SmartArt (its text is read in data order, the
+     arrows are not), chart and embedded object, and any object the package holds but the text
+     does not place. When one needs the page, the document is rendered once to
+     `<stem>_pages/document.pdf` (Word, else LibreOffice). Confirm each in `<stem>.checked`
+     (format below).
+   - Diagram syntax of mermaid / PlantUML blocks you added.
+   Listed but not blocking: sentences found under a different heading than in a reference
+   (moved, or a heading lost), equations not applied, bold phrases. READY means these checks
+   passed within their scope, not that the Markdown means the same as the document; say so when
+   it matters. Work through the remaining items, edit `仕様書.md`, and rerun: a rerun checks the
    file as it is now, edits included (`--fresh` throws them away and converts again). Stop when
    the status is READY or every remaining item is one you decided to keep (a collapsed table of
    contents, a title a reference moved to metadata or plain text, numbering only the primary
@@ -109,21 +122,34 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    editable copy that keeps every position, line, dash and arrowhead, which is the faithful
    version when the reconstruction is in doubt. Charts carry their series values, input rules their
    choices, pictures their size and alt text. Each sheet is rendered to its own PDF
-   (`<stem>_sheets/sheetNN.pdf`, Excel or LibreOffice). The review then checks two things:
-   - every text in the workbook (cells, shapes, chart titles, rule choices, comments) appears
-     in the Markdown, so you may restructure freely: rewrite a diagram, turn a layout block
-     into a cleaner table, without losing anything;
-   - each reconstructed diagram, chart and picture is listed as a visual check. Open the
-     rendered PDF for that sheet (the PDF reader shows it as an image; extracted pictures in
-     `<stem>_figures/` can be opened directly too), compare, fix the Markdown where the
-     reconstruction is wrong or incomplete, describe pictures that carry information, then add
-     a line starting with the check's id to `<stem>.checked` saying what you found. The checker
-     matches the id only; the note is for the person reading it later, so never record a check
-     you did not look at.
-   READY means nothing is missing, every visual check is recorded, and every mermaid / PlantUML
-   block in the Markdown passes the diagram check (participants declared, frames closed,
-   activations balanced). The check runs on your edited Markdown, so a correction that breaks a
-   diagram is caught; `scripts/diagram_lint.py file.md` runs it alone. With `--render-diagrams`
+   (`<stem>_sheets/sheetNN.pdf`, Excel or LibreOffice), and the renders are reused only while the
+   workbook is the same version. The review then checks:
+   - every text of a sheet (cells, shapes, legacy text boxes, SmartArt, chart titles, rule
+     choices, comments, printed header and footer) appears in that sheet's section of the
+     Markdown, as many times as in the sheet. Short values (1, 2, ○, ×) are checked on the same
+     line as their row label, so a changed quantity is caught. You may restructure freely:
+     rewrite a diagram, turn a layout block into a cleaner table, as long as each sheet keeps its
+     `## Sheet:` heading and a short value stays on its row's line;
+   - each reconstructed diagram, chart, chart sheet, picture and SmartArt is a visual check, and
+     so is whatever the package holds that is not read: an object that is not a chart, SmartArt
+     or picture, embedded files, newer chart kinds (waterfall, treemap), drawing elements beyond
+     what was read. Open the rendered PDF for that sheet (the PDF reader shows it as an image;
+     extracted pictures in `<stem>_figures/` can be opened directly too), compare, fix the
+     Markdown where the reconstruction is wrong or incomplete, describe pictures that carry
+     information, then record it in `<stem>.checked`.
+   `<stem>.checked`: one line per check, starting with its id exactly as the review prints it,
+   for example `シーケンス#diagram@1a2b3c4d  matches the sheet, message 3 relabelled`. The part
+   after `@` is a fingerprint of the content you looked at: when the file changes, a changed
+   item gets a new id and is shown as "recorded for different content: look again", while
+   unchanged items stay confirmed. The note is for the person reading it later; never record a
+   check you did not look at.
+   READY means the source version matches, nothing is missing, every visual check is recorded,
+   and every mermaid / PlantUML block passes the diagram check (participants declared, frames
+   closed, activations balanced). It is a statement about these checks, not a proof that the
+   Markdown means the same as the workbook. The diagram check runs on your edited Markdown, so a
+   correction that breaks a diagram is caught, and an arrow you reversed or relabelled is listed
+   under "Diagram edits since the reconstruction" so the change is deliberate;
+   `scripts/diagram_lint.py file.md` runs the syntax check alone. With `--render-diagrams`
    and PlantUML (`PLANTUML_JAR` or `plantuml` on PATH, run in its sandbox profile) or mermaid-cli
    (`mmdc`) installed, the review also renders each block with the real tool and lists the images
    to compare with the sheet. Rendering is off by default because the diagram text comes from the
@@ -242,12 +268,14 @@ on a copy of the file to let Excel/LibreOffice fill them in.
 | xlsx | text in text boxes and shapes, with anchor cell; pictures listed | openpyxl ignores drawings entirely, so review notes written in a text box vanish from a plain dump. |
 | xlsx | merged ranges, cell comments, defined names, tables; merged cells marked `[B3:E3, 4 cols]` in the grid | Merged header cells explain odd empty cells; in a layout table the span is the field width. Comments are reviewer intent. |
 | xlsx | sequence diagrams and flowcharts drawn with shapes, as mermaid plus a located list; chart series values; input-rule choices; pictures with size and alt | openpyxl reads none of the drawing layer. Specification workbooks put the message flow in arrows and boxes, and the allowed values in a dropdown. |
+| xlsx | SmartArt text in reading order with nesting; legacy (VML) text boxes and form-control labels; chart sheets with their series; printed header and footer; struck-through cells as `~~text~~` | Workbooks converted from .xls keep text boxes in the old format, which the DrawingML layer does not contain. A strikethrough in a revised specification means "deleted"; read as plain text it looks current. The document number and revision are often only in the printed header. |
 | docx | automatic numbers on headings and lists (`第1章`, `1.2.3`, `(a)`), nested list depth, ordered vs bullet | The numbers live in numbering.xml, not in the text, so every plain walk prints "概要" where the document says "1.1 概要"; a spec that says "see 3.2.1" cannot be followed without them. |
 | docx | heading tree in `--outline`, tables inline in document order, content inside content controls | python-docx's `paragraphs` skips tables and anything wrapped in a content control, so a plain loop loses every table and sometimes whole sections. |
 | docx | footnotes as `[^n]` with a Notes section, figures as `[figure: name — alt text]` (`--images DIR` extracts them), captions, equations as text, text boxes as separate quoted blocks | Each of these is silently dropped or, for text boxes, jumbled into the paragraph they float over. A footnote often holds the exception the spec hinges on. |
+| docx | struck-through runs as `~~text~~`; SmartArt text with nesting; charts with series values; embedded objects named (content not extracted) | Every other converter drops SmartArt and charts in a Word file to nothing, and a struck-through sentence to an ordinary one. |
 | docx | table-of-contents field collapsed to one line | A stale TOC is a page of headings with wrong page numbers; the live headings follow in the body. |
 | docx | header/footer text, comments, tracked-changes flag | "社外秘" lives in the header. If tracked changes exist, deletions are omitted from the dump; say so if the user is reviewing edits. |
-| pptx | speaker notes, hidden slides, tables, chart series data, grouped shapes | Notes often contain the actual script; hidden slides are usually "do not present" leftovers. Chart values are embedded and recoverable. |
+| pptx | speaker notes, hidden slides, tables, chart series data, grouped shapes, SmartArt text with nesting, picture alt text (`--images DIR` extracts pictures) | Notes often contain the actual script; hidden slides are usually "do not present" leftovers. Chart values are embedded and recoverable. A process drawn as SmartArt is otherwise lost whole. |
 | pdf | page text, bookmarks, "no text layer" count | Scanned PDFs return nothing; the script tells you how many pages are empty so you can recommend OCR instead of reporting "the PDF is blank". |
 | csv | encoding auto-detect (UTF-8, cp932, UTF-16), delimiter sniff | Japanese CSVs from Excel are cp932; reading them as UTF-8 raises or produces mojibake. |
 

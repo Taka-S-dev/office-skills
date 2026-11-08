@@ -19,15 +19,18 @@ Markdown is still produced.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import office2md  # noqa: E402
 import diagram_lint  # noqa: E402
+import review_checks as rc  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # Windows console defaults to cp932
@@ -39,16 +42,19 @@ NUM_PREFIX = re.compile(r"^(第\s*[0-9０-９一二三四五六七八九十]+\s*
 
 # -- running the engines ------------------------------------------------------------------
 
-def run_office2md(src: Path, out_md: Path, images: Path, base: Path | None = None) -> str:
+def run_office2md(src: Path, out_md: Path, images: Path | None, base: Path | None = None,
+                  write: bool = True) -> tuple[str, dict]:
     # images_base makes figure paths relative to the folder the .md lives in, with forward slashes
     opts = argparse.Namespace(outline=False, profile=False, sheet=None, slide=None, max_rows=0, max_cols=0,
                               formulas=False, cells=False, form=False, no_coords=True, raw=False, json=False,
                               out=None, extract_attachments=None, mail_engine="auto", password=None, images=images,
                               images_base=base or out_md.parent)
     h = office2md.HANDLERS[src.suffix.lower()](src, opts)
-    text = h.to_markdown(h.dump())
-    out_md.write_text(text, encoding="utf-8")
-    return text
+    data = h.dump()
+    text = h.to_markdown(data)
+    if write:
+        out_md.write_text(text, encoding="utf-8")
+    return text, data
 
 
 def run_pandoc(src: Path, out_md: Path, media: Path) -> str | None:
@@ -84,13 +90,15 @@ def run_markitdown(src: Path, out_md: Path) -> str | None:
 
 # -- normalising for comparison -----------------------------------------------------------
 
-def sentences(md: str) -> dict[str, str]:
-    """Normalised sentence -> original line. Markdown syntax, numbering and whitespace removed so
-    that the same content written two ways compares equal."""
-    out: dict[str, str] = {}
+def sentence_entries(md: str) -> list[tuple[str, str, str]]:
+    """(normalised sentence, original line, section) for every sentence, in order. Markdown
+    syntax, numbering and whitespace are removed so that the same content written two ways
+    compares equal; the section is the normalised text of the nearest heading above."""
+    out: list[tuple[str, str, str]] = []
+    section = ""
     for raw in md.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("|---", "```", "_Content extracted", "_(table of contents", "[figure:", ":::")):
+        if not line or line.startswith(("|---", "```", "_Content extracted", "_Source:", "_(table of contents", "[figure:", ":::")):
             continue
         line = re.sub(r"^>\s*\*\*Text box:\*\*\s*", "", line)      # text box content is content
         line = re.sub(r"\[\[\d+\]\]\(#[^)]*\)", "", line)           # markitdown footnote marks
@@ -100,8 +108,10 @@ def sentences(md: str) -> dict[str, str]:
             cells = [c.strip() for c in line.strip("|").split("|")]
             for c in cells:
                 for s in split_sentences(c):
-                    out.setdefault(s, raw)
+                    out.append((s, raw, section))
             continue
+        if re.match(r"^#{1,6}\s", line):
+            section = "".join(split_sentences(re.sub(r"^#{1,6}\s*", "", line))) or section
         line = re.sub(r"^#{1,6}\s*", "", line)
         line = re.sub(r"^(\s*[-*+]\s+|\s*\d+\.\s+|>\s*)+", "", line)
         line = re.sub(r"\[\^[^\]]+\]", "", line)
@@ -109,12 +119,20 @@ def sentences(md: str) -> dict[str, str]:
         line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)
         line = re.sub(r"<[^>]+>", "", line)
         for s in split_sentences(line):
-            out.setdefault(s, raw)
+            out.append((s, raw, section))
+    return out
+
+
+def sentences(md: str) -> dict[str, str]:
+    """Normalised sentence -> first original line it came from."""
+    out: dict[str, str] = {}
+    for s, raw, _ in sentence_entries(md):
+        out.setdefault(s, raw)
     return out
 
 
 def split_sentences(text: str) -> list[str]:
-    text = text.replace("**", "").replace("__", "").replace("*", "").replace("`", "").replace("\\", "")
+    text = text.replace("~~", "").replace("**", "").replace("__", "").replace("*", "").replace("`", "").replace("\\", "")
     pieces = re.split(r"(?<=[。．.!?！？])\s*", text)
     out = []
     for p in pieces:
@@ -226,12 +244,15 @@ def apply_safe(primary: str, refs: dict[str, str]) -> tuple[str, dict[str, int]]
 
 # -- the review ---------------------------------------------------------------------------
 
-def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int] | None = None) -> tuple[str, int]:
+def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int] | None = None,
+           checks: dict | None = None) -> tuple[str, int]:
+    checks = checks or {}
     out = [f"# Cross-check of {src.name}", "", office2md.DATA_NOTICE, ""]
     if not refs:
         out.append("Status: NO REFERENCE. pandoc is not installed and markitdown is unavailable, so the "
                    "Markdown comes from office2md alone and nothing could be compared. Say so when handing it over.")
-        return "\n".join(out) + "\n", 0
+        out += [""] + checks.get("visual_lines", [])
+        return "\n".join(out) + "\n", checks.get("total", 0) - checks.get("done", 0)
     status_at = len(out)          # the status block is inserted here once the counts are known
     out.append("Primary: office2md. References: " + ", ".join(refs) + ". Each item below is a place where a "
                "reference has something the primary lacks, or the two disagree. Decide per item: fix the "
@@ -239,11 +260,15 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
                "dropped page numbers, numbering that only the primary has).")
     out.append("")
     n_items = 0
-    counts = {"missing": 0, "links": 0, "equations": 0, "bold": 0, "tables": 0, "headings": 0}
+    counts = {"missing": 0, "links": 0, "equations": 0, "bold": 0, "tables": 0, "headings": 0, "fewer": 0, "moved": 0}
     own = {f"# {src.name}", "## Notes", "## Comments"}        # lines office2md adds itself
     # drop those lines before sentence extraction: "# 仕様書.docx" would otherwise yield the sentence
     # "仕様書" and shadow the document's real title heading
-    p_sent = sentences("\n".join(l for l in primary.splitlines() if l.strip() not in own))
+    p_text = "\n".join(l for l in primary.splitlines() if l.strip() not in own)
+    p_sent = sentences(p_text)
+    p_entries = sentence_entries(p_text)
+    p_count = Counter(s for s, _, _ in p_entries)
+    p_section = {s: sec for s, _, sec in p_entries}
     p_links, p_emph, p_eq, p_tables = links(primary), emphasis(primary), equations(primary), tables(primary)
     p_heads = [h for h in headings(primary) if h not in (src.name, "Notes", "Comments")]
 
@@ -267,6 +292,33 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
         else:
             out.append("None.")
         out.append("")
+
+        # the same sentence fewer times in the primary: one of the repeats was lost
+        r_entries = sentence_entries(text)
+        r_count = Counter(s for s, _, _ in r_entries)
+        fewer = [(r_sent[s], n, p_count[s]) for s, n in r_count.items()
+                 if p_count[s] and p_count[s] < n and len(s) >= 6]
+        if fewer:
+            out += [f"## Repeated content found fewer times in the primary than in {name} ({len(fewer)})", "",
+                    "A specification often repeats a sentence on purpose (one per case or per section). Find where "
+                    "the reference has the other occurrence and add it to the primary.", ""]
+            out += [f"- {esc(m.strip())[:200]} ({n} times in {name}, {have} in the primary)" for m, n, have in fewer[:80]]
+            out.append("")
+            n_items += len(fewer)
+            counts["fewer"] += len(fewer)
+        # a sentence present once in each, under a different heading: moved, or a heading lost
+        r_section = {s: sec for s, _, sec in r_entries}
+        moved = [(r_sent[s], r_section[s], p_section[s]) for s in r_count
+                 if r_count[s] == 1 and p_count[s] == 1 and r_section[s] and p_section[s]
+                 and r_section[s] != p_section[s]]
+        if moved:
+            out += [f"## Content under a different heading than in {name} ({len(moved)})", "",
+                    "Usually a heading the two converters number or word differently; check the ones where the "
+                    "condition or exception now belongs to another section.", ""]
+            out += [f"- {esc(m.strip())[:160]} (in {name} under '{esc(a)[:40]}', in the primary under '{esc(b)[:40]}')"
+                    for m, a, b in moved[:60]]
+            out.append("")
+            counts["moved"] += len(moved)
 
         extra = [p_sent[s] for s in p_sent if s not in r_sent]
         out.append(f"## Content in the primary not found in {name} ({len(extra)})")
@@ -345,30 +397,53 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
             n_items += len(only_ref)
             counts["headings"] += len(only_ref)
 
-    out.append("## Done when")
-    out.append("")
-    out.append("Rerun this script after editing. The lists above should contain only differences you decided to keep.")
-
-    # status block at the top: the one place to look to know whether this is finished
     lint = diagram_lint.lint_markdown(primary)
     if lint:
         out += ["## Diagram syntax problems (" + str(sum(len(e) for _, _, e in lint)) + ")", ""]
         for lang, line, errs in lint:
             out += [f"- {lang} block at line {line}: {esc(e)}" for e in errs]
         out.append("")
-    blocking = counts["missing"] + counts["links"] + counts["headings"] + sum(len(e) for _, _, e in lint)
+    src_state, md_digest, now_digest, md_name = checks.get("source", ("unknown", "", "", ""))
+    out += source_lines(src_state, md_digest, now_digest, md_name)
+    vis_total, vis_done, vis_stale = checks.get("total", 0), checks.get("done", 0), checks.get("stale", 0)
+    if checks.get("visual_lines"):
+        out += checks["visual_lines"] + [""]
+    out.append("## Done when")
+    out.append("")
+    out.append("Rerun this script after editing. The lists above should contain only differences you decided to keep.")
+
+    # status block at the top: the one place to look to know whether this is finished
+    lint_n = sum(len(e) for _, _, e in lint)
+    content_ok = counts["missing"] + counts["fewer"] + counts["links"] + counts["headings"] == 0
+    blocking = (counts["missing"] + counts["fewer"] + counts["links"] + counts["headings"] + lint_n
+                + (vis_total - vis_done) + (1 if src_state == "differs" else 0))
     verdict = "READY" if blocking == 0 and counts["tables"] == 0 else "NEEDS REVIEW"
     status = [f"**Status: {verdict}**", ""]
     if applied:
         status.append("Applied automatically (safe, exact matches only): "
                       + ", ".join(f"{v} {k}" for k, v in applied.items() if v) + "." if any(applied.values())
                       else "Applied automatically: nothing matched.")
-    status.append(f"Remaining: {counts['missing']} sentence(s) only in a reference, {counts['links']} link(s), "
-                  f"{counts['equations']} equation(s) not applied, {counts['bold']} bold phrase(s) (judgement call), "
-                  f"{counts['tables']} table shape difference(s), {counts['headings']} heading difference(s).")
-    status.append("READY means no reference has content, links or headings the primary lacks and the tables "
-                  "match in shape; bold and equation items are optional polish.")
-    status.append("")
+        status.append("")
+    status += ["Checks:",
+               status_line(src_state != "differs",
+                           {"match": "Source: the Markdown was made from this version of the document.",
+                            "unknown": "Source: the Markdown names no source version (made by an older office2md).",
+                            "differs": "Source: the Markdown was made from another version of the document."}[src_state]),
+               status_line(content_ok, f"Content against {', '.join(refs)}: {counts['missing']} sentence(s) only in a "
+                           f"reference, {counts['fewer']} repeated fewer times, {counts['links']} link(s), "
+                           f"{counts['headings']} heading difference(s)."),
+               status_line(counts["tables"] == 0, f"Table shapes: {counts['tables']} difference(s) in cell counts."),
+               status_line(vis_done == vis_total, f"Visual checks: {vis_done} of {vis_total} confirmed"
+                           + (f", {vis_stale} recorded for content that has since changed" if vis_stale else "")
+                           + (f" (page render: {checks['page_pdf']})" if checks.get("page_pdf") else "") + "."),
+               status_line(lint_n == 0, f"Diagram syntax: {lint_n} problem(s) (built-in checker)."),
+               f"- [info] {counts['moved']} sentence(s) under a different heading, {counts['equations']} equation(s) "
+               f"not applied, {counts['bold']} bold phrase(s): look at them, none blocks READY.",
+               "",
+               "READY means the checks above passed within their scope: what the references found is in the primary, "
+               "and every figure and object was looked at. It does not prove the Markdown means the same as the "
+               "document: content every converter drops (text inside pictures) is covered only by the visual checks.",
+               ""]
     out[status_at:status_at] = status
     return "\n".join(out) + "\n", blocking + counts["tables"]     # the count printed = what blocks READY
 
@@ -386,69 +461,35 @@ XLSX_OPTS = dict(outline=False, profile=False, sheet=None, slide=None, max_rows=
                  extract_attachments=None, mail_engine="auto", password=None)
 
 
-def _norm(s: str) -> str:
-    return re.sub(r"<br>|[\s\\*|/`]", "", str(s))
+OFFICE_LIMIT_S = 240
 
 
-def xlsx_inventory(data: dict) -> list[tuple[str, str]]:
-    """(where, text) for every piece of text in the workbook that the Markdown must carry."""
-    items: list[tuple[str, str]] = []
-    for s in data["sheets"]:
-        name = s["name"]
-        for c in s["cells"]:
-            items.append((f"{name}!{c['address']}", str(c["display"])))
-        for d in s.get("drawings", []):
-            if d.get("text"):
-                items.append((f"{name} {d['kind']} '{d['name']}' at {d['anchor']}", d["text"]))
-        for ch in s.get("charts", []):
-            if ch.get("title"):
-                items.append((f"{name} chart '{ch['name']}' title", ch["title"]))
-            for se in ch.get("series", []):
-                if se.get("name"):
-                    items.append((f"{name} chart '{ch['name']}' series", se["name"]))
-        for v in s.get("validations", []):
-            if v["rule"].startswith("list: "):
-                for choice in v["rule"][6:].split(" (from ")[0].split(", "):
-                    items.append((f"{name} input rule {v['range']}", choice))
-        for c in s.get("comments", []):
-            items.append((f"{name}!{c['cell']} comment", c["text"] or ""))
-    keep = []
-    for where, text in items:
-        n = _norm(text)
-        if len(n) < 2 or re.fullmatch(r"-?\d{1,2}", n):
-            continue        # "1", "8": present everywhere, says nothing about completeness
-        keep.append((where, text))
-    return keep
-
-
-def visual_items(data: dict, sheet_pdf: dict[str, str]) -> list[tuple[str, str]]:
-    items = []
-    for s in data["sheets"]:
-        name = s["name"]
-        pdf = sheet_pdf.get(name, "")
-        where = f" in {pdf}" if pdf else ""
-        d = s.get("diagram")
-        if d and (d["sequence"] or d["edges"] or d["unexplained"]):
-            what = []
-            if d["sequence"]:
-                what.append(f"{len(d['sequence']['messages'])} message(s) between "
-                            f"{len(d['sequence']['participants'])} participant(s)")
-            if d["edges"]:
-                what.append(f"{len(d['edges'])} connection(s)")
-            if d["unexplained"]:
-                what.append(f"{len(d['unexplained'])} line(s) not interpreted")
-            items.append((f"{name}#diagram", f"Compare the Diagram section of sheet {name} ({'; '.join(what)}) with the "
-                          f"drawing{where}: participants, order, arrow directions, labels. Correct the Markdown, and "
-                          "describe any line not interpreted."))
-        for i, ch in enumerate(s.get("charts", []), start=1):
-            items.append((f"{name}#chart{i}", f"Check chart '{ch['name']}' (title, series, values) against the drawn chart{where}."))
-        for i, pc in enumerate(s.get("pictures", []), start=1):
-            if pc.get("placeholder"):
-                continue
-            items.append((f"{name}#picture{i}", f"Picture '{pc['name']}' at {pc['from']}: its content is not extracted. "
-                          f"Look at it{where} and describe what it shows in the Markdown, or note that it carries "
-                          "no information."))
-    return items
+def run_office_script(script: str, image: str, env: dict[str, str], limit: int = OFFICE_LIMIT_S) -> str:
+    """Run a PowerShell script that drives Excel or Word through COM, in a job with a time limit.
+    A hidden dialog (repair, password, conversion) makes the Office process wait forever; on the
+    limit the job is stopped and the Office processes started since this call are ended, so none
+    is left running invisibly. The script travels in an environment variable, never in the
+    command line, and the file paths in OFFICE_SRC / OFFICE_OUT the same way."""
+    wrapper = f"""
+$t0 = Get-Date
+$job = Start-Job -ScriptBlock ([scriptblock]::Create($env:OFFICE_SCRIPT))
+if (Wait-Job $job -Timeout {int(limit)}) {{ Receive-Job $job 2>$null }}
+else {{
+  Stop-Job $job
+  # only hidden instances started by this call: a window the user opened meanwhile is left alone
+  Get-Process {image} -ErrorAction SilentlyContinue |
+    Where-Object {{ $_.StartTime -ge $t0 -and $_.MainWindowHandle -eq 0 }} | Stop-Process -Force
+  Write-Output 'TIMEOUT'
+}}
+Remove-Job $job -Force
+"""
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                       capture_output=True, text=True, timeout=limit + 60,
+                       env={**os.environ, **env, "OFFICE_SCRIPT": script})
+    if "TIMEOUT" in r.stdout:
+        print(f"[md_crosscheck] {image.title()} did not answer within {limit} s (a hidden dialog?); stopped it",
+              file=sys.stderr)
+    return r.stdout
 
 
 def render_sheets(src: Path, out: Path, sheet_names: list[str]) -> tuple[dict[str, str], str]:
@@ -475,13 +516,16 @@ try {
     } catch { Write-Output ('EMPTY {0}' -f $i) }
   }
   $wb.Close($false)
-} finally { $app.Quit() }
+} finally {
+  $app.Quit()
+  # release every COM reference, or Excel stays running hidden after Quit
+  foreach ($o in @($ps, $ws, $wb, $app)) { if ($o) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($o) } }
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+}
 """
         try:
-            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                               capture_output=True, text=True, timeout=300,
-                               env={**__import__("os").environ, "OFFICE_SRC": str(src.resolve()), "OFFICE_OUT": str(out.resolve())})
-            done = {int(x.split()[1]) for x in r.stdout.split("\n") if x.startswith("OK ")}
+            stdout = run_office_script(ps, "EXCEL", {"OFFICE_SRC": str(src.resolve()), "OFFICE_OUT": str(out.resolve())})
+            done = {int(x.split()[1]) for x in stdout.split("\n") if x.startswith("OK ")}
             if done:
                 return {sheet_names[i - 1]: f"{out.name}/sheet{i:02d}.pdf" for i in sorted(done)
                         if 0 < i <= len(sheet_names)}, "Excel"
@@ -491,14 +535,52 @@ try {
                                       if Path(r"C:\Program Files\LibreOffice\program\soffice.exe").exists() else None)
     if so:
         try:
-            r = subprocess.run([so, "--headless", "--convert-to", "pdf", "--outdir", str(out.resolve()), str(src.resolve())],
-                               capture_output=True, text=True, timeout=300)
+            subprocess.run([so, "--headless", "--convert-to", "pdf", "--outdir", str(out.resolve()), str(src.resolve())],
+                           capture_output=True, text=True, timeout=300)
             pdf = out / (src.stem + ".pdf")
             if pdf.exists():
                 return {name: f"{out.name}/{pdf.name} (all sheets in tab order)" for name in sheet_names}, "LibreOffice"
         except (subprocess.TimeoutExpired, OSError):
             pass
     return {}, ""
+
+
+def ident(s: str) -> str:
+    return s.replace("`", "'")
+
+
+def status_line(ok: bool | None, text: str) -> str:
+    """One line of the status block: ok, FAIL, or not run (a check that could not run is not a pass)."""
+    return f"- [{'ok' if ok else 'not run' if ok is None else 'FAIL'}] {text}"
+
+
+def visual_section(visuals: list[tuple[str, str, str]], lines: list[str], checked_name: str,
+                   example: str) -> tuple[list[str], int, int]:
+    """The visual-check list and (confirmed, stale) counts."""
+    states = {vid: rc.check_state(vid, fp, lines) for vid, fp, _ in visuals}
+    done = sum(1 for v in states.values() if v == "done")
+    stale = sum(1 for v in states.values() if v == "stale")
+    out = [f"## Visual checks ({done} of {len(visuals)} confirmed)", ""]
+    if not visuals:
+        return out + ["None: nothing was reconstructed or left unextracted."], 0, 0
+    for vid, fp, what in sorted(visuals, key=lambda v: states[v[0]] == "done"):
+        st = states[vid]
+        note = " **(recorded for different content: look again)**" if st == "stale" else ""
+        # names in `what` come from the file: escaped like any other document text
+        out.append(f"- [{'x' if st == 'done' else ' '}] `{ident(rc.check_key(vid, fp))}`{note} — {esc(what)}")
+    first = rc.check_key(visuals[0][0], visuals[0][1])
+    out += ["", f"After checking one, add a line to {checked_name} that starts with its id exactly as shown, then "
+            f"what you found, for example: `{ident(first)}  {example}`. The part after @ names the content you "
+            "looked at: when the file changes, a changed item gets a new id and has to be looked at again."]
+    return out, done, stale
+
+
+def source_lines(state: str, md_digest: str, now: str, md_name: str) -> list[str]:
+    if state != "differs":
+        return []
+    return ["## The Markdown was made from another version of the file", "",
+            f"{md_name} records sha256 {md_digest}; the file is now {now}. Its text, diagrams and the checks below "
+            "describe the old version. Regenerate with --fresh and carry your edits over, then rerun.", ""]
 
 
 def xlsx_main(src: Path, a) -> int:
@@ -517,52 +599,80 @@ def xlsx_main(src: Path, a) -> int:
     else:
         primary = primary_path.read_text(encoding="utf-8")
         print(f"[md_crosscheck] reusing existing {primary_path.name} (pass --fresh to regenerate from the workbook)")
+    src_state, md_digest, now_digest = rc.source_state(primary, src)
 
     sheet_pdf, method = {}, ""
     render_dir = out_dir / f"{stem}_sheets"
+    names = [s["name"] for s in data["sheets"]]
     if not a.no_render:
-        names = [s["name"] for s in data["sheets"]]
-        if render_dir.exists() and any(render_dir.glob("*.pdf")) and not a.fresh:
+        if not a.fresh and render_dir.exists() and rc.renders_current(render_dir, src):
             sheet_pdf = {n: f"{render_dir.name}/sheet{i:02d}.pdf" for i, n in enumerate(names, start=1)
                          if (render_dir / f"sheet{i:02d}.pdf").exists()}
-            method = "existing renders"
+            method = "existing renders of this version"
         else:
+            # renders of another version must never be compared against: remove them first
+            for old in [*render_dir.glob("sheet*.pdf"), render_dir / "source.sha256"] if render_dir.exists() else []:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
             sheet_pdf, method = render_sheets(src, render_dir, names)
+            if sheet_pdf:
+                rc.stamp_renders(render_dir, src)
 
-    inv = xlsx_inventory(data)
-    md_norm = _norm(primary)
-    missing = [(w, t) for w, t in inv if _norm(t) not in md_norm]
-    visuals = visual_items(data, sheet_pdf)
+    text = rc.xlsx_text_check(data, primary)
+    missing = text["missing"]
+    visuals = rc.xlsx_visuals(data, sheet_pdf)
+    census_visuals, census_notes = rc.xlsx_census(src, data)
+    visuals += census_visuals
     checked_path = out_dir / f"{stem}.checked"
-    checked_lines = checked_path.read_text(encoding="utf-8").splitlines() if checked_path.exists() else []
-    done = {vid for vid, _ in visuals if any(ln.strip().startswith(vid) for ln in checked_lines)}
+    vis_lines, done, stale = visual_section(visuals, rc.read_checked(checked_path), checked_path.name,
+                                            "matches the rendered sheet")
     lint = diagram_lint.lint_markdown(primary)
     lint_count = sum(len(e) for _, _, e in lint)
     rendered = []
     if a.render_diagrams and diagram_lint.renderers():
         rendered = diagram_lint.render(primary, render_dir / "diagrams")
     render_errors = [r for r in rendered if r[3]]
-    ready = not missing and len(done) == len(visuals) and not lint_count and not render_errors
+    edits = rc.diagram_edits(data, primary)
+    ready = (not missing and done == len(visuals) and not lint_count and not render_errors
+             and src_state != "differs")
 
-    def ident(s: str) -> str:
-        return s.replace("`", "'")
-
+    whole = f" Not found as a heading, so checked against the whole Markdown: {', '.join(text['whole_text'])}." \
+        if text["whole_text"] else ""
     out = [f"# Cross-check of {src.name}", "", office2md.DATA_NOTICE, "",
-           f"**Status: {'READY' if ready else 'NEEDS REVIEW'}**", "",
-           f"Text check: {len(inv)} text item(s) in the workbook, {len(missing)} missing from the Markdown.",
-           f"Diagram check: {len(diagram_lint.blocks(primary))} mermaid/PlantUML block(s), {lint_count} problem(s)"
-           + (f"; rendered with the installed tool: {len(rendered) - len(render_errors)} ok, {len(render_errors)} failed."
-              if rendered else "; structure checked (add --render-diagrams to also render with an installed tool)."),
-           f"Visual checks: {len(done)} of {len(visuals)} confirmed (record confirmations in {checked_path.name}).",
-           (f"Rendered sheets ({method}): " + "; ".join(f"{k} → {v}" for k, v in sheet_pdf.items())) if sheet_pdf
-           else "Rendered sheets: none (no Excel or LibreOffice, or --no-render); visual checks need another way to see the sheets.",
-           "READY means every text in the workbook appears in the Markdown and every visual check is confirmed. "
-           "The Markdown may be restructured freely (rewrite a diagram, merge blocks into one table); the text check "
-           "keeps that from dropping anything.", ""]
+           f"**Status: {'READY' if ready else 'NEEDS REVIEW'}**", "", "Checks:",
+           status_line(src_state != "differs",
+                       {"match": "Source: the Markdown was made from this version of the workbook.",
+                        "unknown": "Source: the Markdown names no source version (made by an older office2md).",
+                        "differs": "Source: the Markdown was made from another version of the workbook."}[src_state]),
+           status_line(not missing, f"Text: {text['total']} text item(s), {len(missing)} missing. Each sheet's texts are "
+                       "looked for in that sheet's section, as many times as they occur; "
+                       f"{text['short_checked']} short value(s) (1, 2, ○) are looked for on the line of their row label."
+                       + whole),
+           status_line(done == len(visuals), f"Visual checks: {done} of {len(visuals)} confirmed"
+                       + (f", {stale} recorded for content that has since changed" if stale else "")
+                       + f" (record them in {checked_path.name})."),
+           status_line(not lint_count, f"Diagram syntax: {len(diagram_lint.blocks(primary))} mermaid/PlantUML "
+                       f"block(s), {lint_count} problem(s) (built-in checker)."),
+           status_line((not render_errors) if rendered else None,
+                       f"Diagram rendering with the installed tool: {len(rendered) - len(render_errors)} ok, "
+                       f"{len(render_errors)} failed." if rendered else
+                       "Diagram rendering with a real renderer: not run (--render-diagrams and PlantUML or mermaid-cli)."),
+           status_line(True if sheet_pdf else None,
+                       (f"Rendered sheets ({method}): " + "; ".join(f"{k} → {v}" for k, v in sheet_pdf.items()))
+                       if sheet_pdf else "Rendered sheets: none (no Excel or LibreOffice, or --no-render); visual "
+                       "checks need another way to see the sheets."),
+           "",
+           "READY means the checks above passed within their scope. It does not prove the Markdown means the same as "
+           "the workbook: meaning carried by colour or position is covered only where a visual check asks for it, and "
+           "a value moved to another place in the same sheet section passes the text check. Restructure the Markdown "
+           "freely (rewrite a diagram, merge blocks into one table); the text check keeps that from dropping anything.",
+           ""]
+    out += source_lines(src_state, md_digest, now_digest, primary_path.name)
     if lint or render_errors:
         out += [f"## Diagram problems ({lint_count + len(render_errors)})", "",
-                "A diagram that does not parse is drawn wrongly or not at all. Fix the block at the line given."]
-        out.append("")
+                "A diagram that does not parse is drawn wrongly or not at all. Fix the block at the line given.", ""]
         for lang, line, errs in lint:
             out += [f"- {lang} block at line {line}: {esc(e)}" for e in errs]
         for lang, line, _, err in render_errors:
@@ -573,22 +683,20 @@ def xlsx_main(src: Path, a) -> int:
                 + "; ".join(f"{Path(img).name}" for _, _, img, _ in rendered), ""]
     out += [f"## Text in the workbook missing from the Markdown ({len(missing)})", ""]
     if missing:
-        out.append("Each line is where the text sits in the workbook. Put it back in the Markdown where it belongs.")
-        out.append("")
-        for w, t in missing[:200]:
-            out.append(f"- {esc(w)}: {esc(t)[:200]}")
+        out += ["Each line is where the text sits in the workbook. Put it back in the sheet's section of the Markdown; "
+                "keep a short value on the same line as its row label.", ""]
+        for w, t, detail in missing[:200]:
+            out.append(f"- {esc(w)}: {esc(t)[:200]}" + (f" ({esc(detail)})" if detail else ""))
         if len(missing) > 200:
             out.append(f"- … {len(missing) - 200} more")
     else:
         out.append("None.")
-    out += ["", f"## Visual checks ({len(done)} of {len(visuals)} confirmed)", ""]
-    if visuals:
-        for vid, what in sorted(visuals, key=lambda v: v[0] in done):
-            out.append(f"- [{'x' if vid in done else ' '}] `{ident(vid)}` — {what}")
-        out += ["", f"After checking one, add a line starting with its id to {checked_path.name}, with what you found, "
-                f"for example: `{ident(visuals[0][0])}  matches the rendered sheet`."]
-    else:
-        out.append("None: no diagrams, charts or pictures with content.")
+    out += [""] + vis_lines
+    if edits:
+        out += ["", f"## Diagram edits since the reconstruction ({len(edits)})", "",
+                "The Markdown's sequence diagram differs from what was read from the shapes. Fine when you changed it "
+                "after looking at the drawing; otherwise compare again.", ""]
+        out += [f"- {esc(e)}" for e in edits[:60]]
     notes = []
     for s in data["sheets"]:
         d = s.get("diagram")
@@ -598,6 +706,10 @@ def xlsx_main(src: Path, a) -> int:
         if s.get("uncached_formulas"):
             notes.append(f"- {esc(s['name'])}: {len(s['uncached_formulas'])} formula(s) without a cached value; their "
                          "results are unknown until the workbook is recalculated.")
+        if s.get("struck"):
+            notes.append(f"- {esc(s['name'])}: {len(s['struck'])} struck-through cell(s), written as ~~text~~; keep the "
+                         "marking, it usually means deleted.")
+    notes += [f"- {esc(n)}" for n in census_notes]
     if notes:
         out += ["", "## Notes", ""] + notes
     out += ["", "## Done when", "",
@@ -608,7 +720,114 @@ def xlsx_main(src: Path, a) -> int:
     if sheet_pdf:
         print(f"[md_crosscheck] rendered:  {render_dir} ({method})")
     print(f"[md_crosscheck] review:    {review_path}  "
-          f"({'READY' if ready else f'{len(missing)} missing, {len(visuals) - len(done)} visual check(s) open'})")
+          f"({'READY' if ready else f'{len(missing)} missing, {len(visuals) - done} visual check(s) open'})")
+    return 0
+
+
+def render_docx(src: Path, out: Path) -> str:
+    """The document as one PDF (Word through COM, else LibreOffice). Returns the PDF path or ''."""
+    out.mkdir(parents=True, exist_ok=True)
+    pdf = out / "document.pdf"
+    if sys.platform == "win32":
+        ps = """
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Word.Application
+try {
+  $app.Visible = $false; $app.DisplayAlerts = 0; $app.AutomationSecurity = 3
+  # read-only, no conversion prompt, no repair, no encoding dialog; a placeholder password makes a
+  # protected document fail at once instead of waiting on a password prompt nobody can see.
+  # Every argument is given: COM from PowerShell cannot skip one with [Type]::Missing.
+  $doc = $app.Documents.Open($env:OFFICE_SRC, $false, $true, $false, '_', '_', $false, '_', '_', 0, 65001, $false, $false, 0, $true)
+  $doc.ExportAsFixedFormat($env:OFFICE_OUT, 17)
+  $doc.Close(0)
+  Write-Output 'OK'
+} finally {
+  $app.Quit()
+  foreach ($o in @($doc, $app)) { if ($o) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($o) } }
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+}
+"""
+        try:
+            run_office_script(ps, "WINWORD", {"OFFICE_SRC": str(src.resolve()), "OFFICE_OUT": str(pdf.resolve())})
+            if pdf.exists():
+                return str(pdf)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    so = shutil.which("soffice") or (r"C:\Program Files\LibreOffice\program\soffice.exe"
+                                      if Path(r"C:\Program Files\LibreOffice\program\soffice.exe").exists() else None)
+    if so:
+        try:
+            subprocess.run([so, "--headless", "--convert-to", "pdf", "--outdir", str(out.resolve()), str(src.resolve())],
+                           capture_output=True, text=True, timeout=300)
+            made = out / (src.stem + ".pdf")
+            if made.exists():
+                made.replace(pdf)
+                return str(pdf)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return ""
+
+
+def word_main(src: Path, a) -> int:
+    out_dir = a.out_dir or src.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = src.stem
+    primary_path = out_dir / f"{stem}.md"
+    fresh = a.fresh or not primary_path.exists()
+    primary, data = run_office2md(src, primary_path, (out_dir / f"{stem}_figures") if fresh else None, out_dir,
+                                  write=fresh)
+    if not fresh:
+        # a rerun checks the Markdown as it is now, edits included; --fresh starts over
+        primary = primary_path.read_text(encoding="utf-8")
+        print(f"[md_crosscheck] reusing existing {primary_path.name} (pass --fresh to regenerate from the .docx)")
+    src_state, md_digest, now_digest = rc.source_state(primary, src)
+
+    refs: dict[str, str] = {}
+    if not a.no_pandoc:
+        t = run_pandoc(src, out_dir / f"{stem}.pandoc.md", out_dir / f"{stem}_pandoc_media")
+        if t is not None:
+            refs["pandoc"] = t
+    if not a.no_markitdown:
+        t = run_markitdown(src, out_dir / f"{stem}.markitdown.md")
+        if t is not None:
+            refs["markitdown"] = t
+
+    applied = None
+    if refs and not a.no_apply:
+        primary, applied = apply_safe(primary, refs)
+        primary_path.write_text(primary, encoding="utf-8")
+
+    visuals = rc.docx_visuals(data) + rc.docx_census(src, data)
+    page_pdf = ""
+    render_dir = out_dir / f"{stem}_pages"
+    needs_page = any(not vid.startswith("figure") for vid, _, _ in visuals)
+    if needs_page and not a.no_render:
+        if not a.fresh and rc.renders_current(render_dir, src) and (render_dir / "document.pdf").exists():
+            page_pdf = f"{render_dir.name}/document.pdf"
+        else:
+            for old in (render_dir / "document.pdf", render_dir / "source.sha256"):
+                if old.exists():
+                    old.unlink()
+            if render_docx(src, render_dir):
+                rc.stamp_renders(render_dir, src)
+                page_pdf = f"{render_dir.name}/document.pdf"
+        if page_pdf:
+            visuals = rc.docx_visuals(data, page_pdf) + rc.docx_census(src, data)
+    checked_path = out_dir / f"{stem}.checked"
+    vis_lines, done, stale = visual_section(visuals, rc.read_checked(checked_path), checked_path.name,
+                                            "matches the page")
+    checks = {"visual_lines": vis_lines, "done": done, "total": len(visuals), "stale": stale,
+              "checked_name": checked_path.name, "page_pdf": page_pdf,
+              "source": (src_state, md_digest, now_digest, primary_path.name)}
+    text, n = review(primary, refs, src, applied, checks)
+    review_path = out_dir / f"{stem}.review.md"
+    review_path.write_text(text, encoding="utf-8")
+    print(f"[md_crosscheck] primary:   {primary_path}")
+    for name in refs:
+        print(f"[md_crosscheck] reference: {out_dir / f'{stem}.{name}.md'}")
+    if not refs:
+        print("[md_crosscheck] no reference converter found (pandoc / markitdown); primary written, nothing compared")
+    print(f"[md_crosscheck] review:    {review_path}  ({n} item(s) to look at)")
     return 0
 
 
@@ -636,41 +855,7 @@ def main(argv=None) -> int:
         return xlsx_main(src, a)
     if src.suffix.lower() not in (".docx", ".docm", ".dotx"):
         sys.exit("[md_crosscheck] Word and Excel files only")
-    out_dir = a.out_dir or src.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = src.stem
-    primary_path = out_dir / f"{stem}.md"
-    if primary_path.exists() and not a.fresh:
-        # a rerun checks the Markdown as it is now, edits included; --fresh starts over
-        primary = primary_path.read_text(encoding="utf-8")
-        print(f"[md_crosscheck] reusing existing {primary_path.name} (pass --fresh to regenerate from the .docx)")
-    else:
-        primary = run_office2md(src, primary_path, out_dir / f"{stem}_figures", out_dir)
-
-    refs: dict[str, str] = {}
-    if not a.no_pandoc:
-        t = run_pandoc(src, out_dir / f"{stem}.pandoc.md", out_dir / f"{stem}_pandoc_media")
-        if t is not None:
-            refs["pandoc"] = t
-    if not a.no_markitdown:
-        t = run_markitdown(src, out_dir / f"{stem}.markitdown.md")
-        if t is not None:
-            refs["markitdown"] = t
-
-    applied = None
-    if refs and not a.no_apply:
-        primary, applied = apply_safe(primary, refs)
-        primary_path.write_text(primary, encoding="utf-8")
-    text, n = review(primary, refs, src, applied)
-    review_path = out_dir / f"{stem}.review.md"
-    review_path.write_text(text, encoding="utf-8")
-    print(f"[md_crosscheck] primary:   {primary_path}")
-    for name in refs:
-        print(f"[md_crosscheck] reference: {out_dir / f'{stem}.{name}.md'}")
-    if not refs:
-        print("[md_crosscheck] no reference converter found (pandoc / markitdown); primary written, nothing compared")
-    print(f"[md_crosscheck] review:    {review_path}  ({n} item(s) to look at)")
-    return 0
+    return word_main(src, a)
 
 
 if __name__ == "__main__":
