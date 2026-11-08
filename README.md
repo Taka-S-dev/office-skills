@@ -62,6 +62,7 @@ python office-read/scripts/office2md.py 仕様書.docx --out 仕様書.md --imag
 python office-read/scripts/md_crosscheck.py 仕様書.docx --out-dir ./md             # pandoc 等と突き合わせ、差分を review.md に
 python office-read/scripts/office2md.py 業務フロー.vsdx                         # レーンごとの流れを mermaid と一覧で
 python office-read/scripts/office2md.py 統計.pdf --layout                       # 表の多い PDF は列をそろえて
+python office-read/scripts/office2md.py 仕様書.pdf --columns                    # 狭い列の表で文が細切れになる PDF
 python office-read/scripts/office2md.py 計画.mpp --gantt                          # 遅れ・予定進捗との差・計画の品質・終了日を決める連なり・gantt 図
 python office-read/scripts/mpp_history.py 旧.mpp 新.mpp                         # 追加・削除・日付のずれ・進捗の差分
 python office-read/scripts/mpp_history.py ./計画の履歴 --cache ./mpp_cache          # 1 年分: 悪化した時期、後から増えたタスク、マイルストーンの推移

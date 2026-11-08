@@ -1518,6 +1518,18 @@ class DocxHandler(Handler):
                 parts.append("\t")
             elif tag in (W + "br", W + "cr"):
                 parts.append("\n")
+            elif tag == W + "ruby":
+                # furigana as Aozora Bunko writes it, ｜base《reading》: the reading stays apart from
+                # the word ("ひぼう誹謗" otherwise), and the word stays searchable as written
+                base: list[str] = []
+                reading: list[str] = []
+                rb, rt = child.find(W + "rubyBase"), child.find(W + "rt")
+                if rb is not None:
+                    self._collect(rb, base, boxes, depth)
+                if rt is not None:
+                    self._collect(rt, reading, boxes, depth)
+                b, r = "".join(base).strip(), "".join(reading).strip()
+                parts.append(f"｜{b}《{r}》" if b and r else b)
             elif tag == W + "footnoteReference":
                 parts.append(f"[^{child.get(W + 'id')}]")
             elif tag == W + "endnoteReference":
@@ -2132,6 +2144,19 @@ def reflow(text: str) -> str:
     return "\n".join(out)
 
 
+def fragmented(text: str) -> bool:
+    """Runs of short lines that end mid-sentence: a narrow table column printed a few characters a
+    line. Labels on a form are short too, but they do not run on for four lines and more."""
+    runs, longest, cur = 0, 0, 0
+    for x in [x.strip() for x in text.splitlines() if x.strip()] + ["。"]:
+        if _width(x) <= 16 and not x.endswith(_ENDS):
+            cur += 1
+        else:
+            runs += cur >= 4
+            longest, cur = max(longest, cur), 0
+    return runs >= 2 or longest >= 8
+
+
 def tabular(text: str) -> bool:
     """A page with many lines of several numbers: a table whose columns plain text loses."""
     rows = [x for x in text.splitlines() if len(re.findall(r"(?<![0-9.,])[-▲△]?[0-9][0-9,.]*%?(?![0-9])", x)) >= 4]
@@ -2169,12 +2194,21 @@ class PdfHandler(Handler):
         for i, p in enumerate(r.pages, start=1):
             if self.opts.slide and i != self.opts.slide:
                 continue
+            if getattr(self.opts, "columns", False):
+                sys.path.insert(0, str(Path(__file__).parent))
+                import pdf_blocks
+                try:
+                    text, _ = pdf_blocks.layout_markdown(p, md_escape)
+                except Exception:
+                    text = reflow((p.extract_text() or "").strip())
+                pages.append({"n": i, "text": text, "tabular": False, "fragmented": False, "md": True})
+                continue
             if getattr(self.opts, "layout", False):
                 text = (p.extract_text(extraction_mode="layout") or "").rstrip()
                 text = "\n".join(line.rstrip() for line in text.splitlines()).strip("\n")
             else:
                 text = reflow((p.extract_text() or "").strip())
-            pages.append({"n": i, "text": text, "tabular": tabular(text)})
+            pages.append({"n": i, "text": text, "tabular": tabular(text), "fragmented": fragmented(text)})
         return {"file": str(self.path), "type": "pdf", "pages": pages,
                 "layout": bool(getattr(self.opts, "layout", False))}
 
@@ -2187,6 +2221,12 @@ class PdfHandler(Handler):
             return "\n".join(out)
         empty = 0
         tables = [p["n"] for p in data["pages"] if p.get("tabular")]
+        frags = [p["n"] for p in data["pages"] if p.get("fragmented")]
+        if frags:
+            shown = ", ".join(map(str, frags[:20])) + (" …" if len(frags) > 20 else "")
+            out.append(f"> Page(s) {shown} have many short broken lines: probably a table with narrow columns, whose "
+                       "cells plain text cuts into pieces. Rerun with --columns to rebuild the cells from where the text "
+                       "sits (approximate; compare with the page).\n")
         if tables and not data.get("layout"):
             shown = ", ".join(map(str, tables[:20])) + (" …" if len(tables) > 20 else "")
             out.append(f"> Page(s) {shown} look like tables: their columns are not kept here. Rerun with --layout "
@@ -2196,6 +2236,8 @@ class PdfHandler(Handler):
             if p["text"] and data.get("layout"):
                 fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", p["text"])), default=0) + 1)
                 out += [fence + "text", p["text"], fence]
+            elif p["text"] and p.get("md"):
+                out.append(p["text"])
             elif p["text"]:
                 out.append(md_para(p["text"]))
             else:
@@ -2712,6 +2754,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
     ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
+    ap.add_argument("--columns", action="store_true",
+                    help="pdf: rebuild paragraphs and table cells from text positions (narrow-column tables)")
     ap.add_argument("--layout", action="store_true",
                     help="pdf: keep each page's columns aligned (tables, forms) instead of joining wrapped lines")
     ap.add_argument("--accept-changes", action="store_true",

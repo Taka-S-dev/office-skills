@@ -763,6 +763,15 @@ inner.cell(0, 0).text = "氏名"; inner.cell(0, 1).text = "山田"
 inner.cell(1, 0).text = "対象者との続柄"; inner.cell(1, 1).text = "本人"
 nd.save(out / "nested.docx")
 
+# --- ruby.docx: furigana as Word stores it (w:ruby with w:rt and w:rubyBase) ------------------
+rb = docx.Document()
+rp = rb.add_paragraph("SNS等を通じた")
+rp._p.append(parse_xml(
+    f'<w:r xmlns:w="{W_NS}"><w:ruby><w:rubyPr><w:rubyAlign w:val="distributeSpace"/></w:rubyPr>'
+    '<w:rt><w:r><w:t>ひぼう</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>誹謗</w:t></w:r></w:rubyBase></w:ruby></w:r>'))
+rp.add_run("中傷への対策を進める。")
+rb.save(out / "ruby.docx")
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

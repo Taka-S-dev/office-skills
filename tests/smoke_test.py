@@ -374,6 +374,21 @@ def main() -> int:
         o = run(READ, d / "nested.docx")
         check("docx: a table nested in a cell is read, one line per row",
               "氏名 \\| 山田<br>対象者との続柄 \\| 本人" in o, o)
+        o = run(READ, d / "ruby.docx")
+        check("docx: furigana written ｜base《reading》, the word stays whole",
+              "SNS等を通じた｜誹謗《ひぼう》中傷への対策を進める。" in o, o)
+        code = "\n".join([
+            "import pdf_blocks as b",
+            "runs = [{'x': 110, 'y': 300 - 14 * i, 'size': 10, 'text': t} for i, t in enumerate(['操作権限', '設定・管', '理に関す', 'ること'])]",
+            "runs += [{'x': 176, 'y': 300 - 14 * i, 'size': 10, 'text': t} for i, t in enumerate(['操作権限設定・', '管理は、すべて', 'の基幹業務シス', 'テムで必要。'])]",
+            "bl = b.blocks(b.segments(runs))",
+            "texts = sorted(x['lines'][0] for x in bl)",
+            "assert texts == ['操作権限設定・管理に関すること', '操作権限設定・管理は、すべての基幹業務システムで必要。'], texts",
+            "print('COLUMNS OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("pdf --columns: narrow cells printed a few characters a line are joined per column",
+              "COLUMNS OK" in o.stdout, o.stdout + o.stderr)
         code = "\n".join([
             "import office2md as m",
             "wrapped = 'あ' * 30 + '\\n' + 'い' * 30 + '\\n' + 'うえお。' + '\\n' + '短い行' + '\\n' + 'か' * 30 + '\\n' + '・項目'",
