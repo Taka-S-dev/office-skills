@@ -124,7 +124,9 @@ def sheet_sections(md: str, names: list[str], heading: str = "## Sheet: ") -> di
     out: dict[str, str | None] = {}
     for name in names:
         head = heading + office2md.md_escape(_clean_name(name))
-        at = next((i for i in starts if lines[i] == head or lines[i].startswith(head + " ")), None)
+        # exact, or followed by the state note ("  _(hidden)_"): a bare prefix match would send
+        # sheet "CUI Overlay" to the section of "CUI Overlay Overview"
+        at = next((i for i in starts if lines[i] == head or lines[i].startswith(head + "  _(")), None)
         if at is None:
             out[name] = None
             continue
