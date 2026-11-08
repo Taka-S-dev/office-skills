@@ -1189,6 +1189,8 @@ class DocxHandler(Handler):
         self._load_numbering(doc)
         self._counters: dict[str, dict[int, int]] = {}
         self._notes = self._load_notes("word/footnotes.xml", "footnote") | self._load_notes("word/endnotes.xml", "endnote")
+        self._note_label: dict[str, str] = {}      # internal id -> number as printed
+        self._note_count: dict[str, int] = {}
         self._images: list[dict] = []
         self._objects: list[dict] = []
         self._changes: dict[str, dict] = {}
@@ -1550,10 +1552,15 @@ class DocxHandler(Handler):
                     self._collect(rt, reading, boxes, depth)
                 b, r = "".join(base).strip(), "".join(reading).strip()
                 parts.append(f"｜{b}《{r}》" if b and r else b)
-            elif tag == W + "footnoteReference":
-                parts.append(f"[^{child.get(W + 'id')}]")
-            elif tag == W + "endnoteReference":
-                parts.append(f"[^e{child.get(W + 'id')}]")
+            elif tag in (W + "footnoteReference", W + "endnoteReference"):
+                # the number the reader sees: notes are numbered in the order they are referenced,
+                # which is not their internal id ("UI2" in print, id 3 in the file)
+                prefix = "e" if tag == W + "endnoteReference" else ""
+                key = prefix + (child.get(W + "id") or "")
+                if key not in self._note_label:
+                    self._note_count[prefix] = self._note_count.get(prefix, 0) + 1
+                    self._note_label[key] = f"{prefix}{self._note_count[prefix]}"
+                parts.append(f"[^{self._note_label[key]}]")
             elif tag in (W + "drawing", W + "pict", W + "object"):
                 # a drawing is a text box, a picture, or both (a picture inside a box).
                 # Only the outermost boxes here; a box inside a box is reached through its
@@ -1871,7 +1878,8 @@ class DocxHandler(Handler):
                 "headers": sorted(set(headers)), "footers": sorted(set(footers)),
                 "comments": self._comments(), "tracked_changes": self._has_tracked_changes(),
                 "changes": list(self._changes.values()),
-                "notes": self._notes, "images": self._images}
+                "notes": {self._note_label[k]: v for k, v in self._notes.items() if k in self._note_label},
+                "images": self._images}
 
     def to_markdown(self, data: dict) -> str:
         out = md_title(data["file"])
@@ -1940,8 +1948,9 @@ class DocxHandler(Handler):
             out.append("")
         if data.get("notes"):
             out.append("## Notes")
-            for nid, text in data["notes"].items():
-                out.append(f"[^{nid}]: {md_para(text)}")
+            order = lambda k: (k[:1] == "e", int(k.lstrip("e")) if k.lstrip("e").isdigit() else 0)  # noqa: E731
+            for nid in sorted(data["notes"], key=order):
+                out.append(f"[^{nid}]: {md_para(data['notes'][nid])}")
             out.append("")
         if data.get("changes") and not getattr(self.opts, "accept_changes", False):
             out += ["## Tracked changes", md_table(
