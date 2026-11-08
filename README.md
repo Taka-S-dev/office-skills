@@ -47,6 +47,7 @@ python tests/smoke_test.py
 手動で実行したいとき:
 
 ```bash
+python office-read/scripts/office2md.py 仕様書.docx --out 仕様書.md --images ./fig   # 番号付き見出し・脚注・図を保った md
 python office-read/scripts/office2md.py 売上.xlsx --outline          # 構造だけ
 python office-read/scripts/office2md.py 売上.xlsx --sheet 明細 --max-rows 0
 python office-read/scripts/office2md.py 売上.xlsx --sheet メイン --cells   # メイン!C4 = 12 の形で 1 セル 1 行

@@ -144,6 +144,17 @@ def main() -> int:
                                    "- 備考 = 特になし  (申請書!B8 → B9)"]), o)
         o = run(READ, docx)
         check("docx header + table + list", "社外秘" in o and "| 項目 | 値 |" in o and "- 箇条書き その1" in o, o)
+        spec = d / "spec.docx"
+        o = run(READ, spec, "--outline")
+        check("spec.docx outline carries automatic heading numbers",
+              "- 第1章 概要" in o and "  - 1.1 目的" in o and "    - 2.1.1 件数項目" in o, o)
+        o = run(READ, spec, "--images", d / "img")
+        check("spec.docx: nested bullets, ordered list, footnote, figure+alt, caption, text box, TOC, equation",
+              all(x in o for x in ["- 任意項目\n  - 省略可能な拡張項目", "1. 注文を受け付ける\n2. 在庫を確認する",
+                                   "[^1]", "[^1]: 旧版（第2版）の形式は対象外。", "figure-001.png — データの全体構成図",
+                                   "*図 1 データの構成*", "> **Text box:** 注記: 改訂時は見出し部も見直すこと",
+                                   "(table of contents field, 3 entries)", "T = P + N × 4"])
+              and (d / "img" / "figure-001.png").exists(), o)
         o = run(READ, pptx)
         check("pptx notes + table", "発表者ノート" in o and "| x | y |" in o, o)
         o = run(READ, csv)

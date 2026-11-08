@@ -808,53 +808,425 @@ class CsvHandler(Handler):
 # ----------------------------------------------------------------------------
 
 class DocxHandler(Handler):
+    """Word → Markdown for reading a specification, not for re-publishing it.
+
+    What a plain python-docx walk loses, and this keeps: the automatic numbers of headings and
+    lists ("3.2.1" lives in numbering.xml, not in the text), list nesting, footnotes, figure
+    placeholders with alt text, text-box content kept apart from the paragraph it floats over,
+    equations as text, content inside content controls, and the table-of-contents field
+    collapsed to one line instead of a page of stale entries.
+    """
     name = "docx"
+
+    _NS = {
+        "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+        "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+        "v": "urn:schemas-microsoft-com:vml",
+    }
+
+    def _q(self, prefix: str, name: str) -> str:
+        return "{%s}%s" % (self._NS[prefix], name)
 
     def _open(self):
         docx = need("docx", "python-docx")
-        return docx.Document(self.path)
+        doc = docx.Document(self.path)
+        self._doc = doc
+        self._load_numbering(doc)
+        self._counters: dict[str, dict[int, int]] = {}
+        self._notes = self._load_notes("word/footnotes.xml", "footnote") | self._load_notes("word/endnotes.xml", "endnote")
+        self._images: list[dict] = []
+        return doc
+
+    # -- numbering ------------------------------------------------------------------------
+
+    def _load_numbering(self, doc) -> None:
+        """numId -> {ilvl: {fmt, text, start}} from numbering.xml, with per-num overrides."""
+        self._num: dict[str, dict[int, dict]] = {}
+        try:
+            root = doc.part.numbering_part.element
+        except Exception:
+            return
+        W = lambda n: self._q("w", n)  # noqa: E731
+
+        def clamp(v, default=1) -> int:
+            try:
+                return max(0, min(32767, int(v)))      # Word's own range; anything else is a crafted file
+            except (TypeError, ValueError):
+                return default
+
+        def parse_lvl(lvl) -> dict:
+            fmt = lvl.find(W("numFmt"))
+            txt = lvl.find(W("lvlText"))
+            st = lvl.find(W("start"))
+            il = clamp(lvl.get(W("ilvl")), 0)
+            text = (txt.get(W("val")) if txt is not None else f"%{il + 1}.") or ""
+            text = re.sub(r"[\x00-\x1f\x7f]", "", text)[:40]
+            return {"fmt": fmt.get(W("val")) if fmt is not None else "decimal",
+                    "text": text,
+                    "start": clamp(st.get(W("val"))) if st is not None else 1}
+
+        abstract: dict[str, dict[int, dict]] = {}
+        for an in root.findall(W("abstractNum")):
+            levels = {int(l.get(W("ilvl"))): parse_lvl(l) for l in an.findall(W("lvl"))}
+            abstract[an.get(W("abstractNumId"))] = levels
+        for num in root.findall(W("num")):
+            ref = num.find(W("abstractNumId"))
+            levels = {k: dict(v) for k, v in abstract.get(ref.get(W("val")) if ref is not None else "", {}).items()}
+            for ov in num.findall(W("lvlOverride")):
+                il = int(ov.get(W("ilvl")) or 0)
+                so = ov.find(W("startOverride"))
+                if so is not None and il in levels:
+                    levels[il]["start"] = int(so.get(W("val")))
+                lv = ov.find(W("lvl"))
+                if lv is not None:
+                    levels[il] = parse_lvl(lv)
+            self._num[num.get(W("numId"))] = levels
+
+    def _num_pr(self, paragraph) -> tuple[str, int] | None:
+        """(numId, ilvl) from the paragraph itself, else from its style chain."""
+        W = lambda n: self._q("w", n)  # noqa: E731
+        pPr = paragraph._p.pPr
+        if pPr is not None and pPr.numPr is not None:
+            nid = pPr.numPr.numId.val if pPr.numPr.numId is not None else None
+            il = pPr.numPr.ilvl.val if pPr.numPr.ilvl is not None else 0
+            if nid is not None:
+                return (str(nid), max(0, min(8, int(il)))) if str(nid) != "0" else None   # OOXML allows ilvl 0..8
+        style = paragraph.style
+        seen = 0
+        while style is not None and seen < 10:
+            spPr = style.element.find(W("pPr"))
+            np_ = spPr.find(W("numPr")) if spPr is not None else None
+            if np_ is not None:
+                nid = np_.find(W("numId"))
+                il = np_.find(W("ilvl"))
+                if nid is not None and nid.get(W("val")) != "0":
+                    try:
+                        lvl = max(0, min(8, int(il.get(W("val"))))) if il is not None else 0
+                    except ValueError:
+                        lvl = 0
+                    return nid.get(W("val")), lvl
+            style = style.base_style
+            seen += 1
+        return None
 
     @staticmethod
-    def _heading_level(paragraph) -> int:
-        name = (paragraph.style.name or "") if paragraph.style else ""
-        m = re.match(r"(?:Heading|見出し)\s*(\d)", name)
-        if m:
-            return int(m[1])
-        if name == "Title":
-            return 1
+    def _fmt_num(n: int, fmt: str) -> str:
+        if fmt in ("decimal", "decimalZero"):
+            return str(n)
+        if fmt == "decimalFullWidth":
+            return str(n).translate(str.maketrans("0123456789", "０１２３４５６７８９"))
+        if fmt in ("lowerLetter", "upperLetter"):
+            s, k = "", n
+            while k > 0:
+                k, r = divmod(k - 1, 26)
+                s = chr(97 + r) + s
+            return s.upper() if fmt == "upperLetter" else s
+        if n < 0 or n > 32767:
+            return str(n)
+        if fmt in ("lowerRoman", "upperRoman"):
+            if not 1 <= n <= 3999:
+                return str(n)
+            vals = [(1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"), (50, "l"),
+                    (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")]
+            s, k = "", n
+            for v, sym in vals:
+                while k >= v:
+                    s += sym
+                    k -= v
+            return s.upper() if fmt == "upperRoman" else s
+        if fmt == "decimalEnclosedCircle":
+            return chr(0x2460 + n - 1) if 1 <= n <= 20 else str(n)
+        if fmt in ("japaneseCounting", "japaneseLegal", "japaneseDigitalTenThousand", "chineseCounting"):
+            digits = "〇一二三四五六七八九"
+            if n < 10:
+                return digits[n]
+            if n < 100:
+                tens, ones = divmod(n, 10)
+                return ("" if tens == 1 else digits[tens]) + "十" + (digits[ones] if ones else "")
+            return str(n)
+        if fmt == "aiueo":
+            kana = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
+            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
+        if fmt == "aiueoFullWidth":
+            kana = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
+            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
+        if fmt == "iroha":
+            kana = "イロハニホヘトチリヌルヲワカヨタレソツネナラムウヰノオクヤマケフコエテアサキユメミシヱヒモセス"
+            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
+        if fmt == "none":
+            return ""
+        return str(n)
+
+    def _label(self, num: tuple[str, int] | None) -> tuple[str | None, bool]:
+        """(label, is_bullet). Advances the counters, so call once per paragraph in order."""
+        if num is None:
+            return None, False
+        nid, il = num
+        levels = self._num.get(nid)
+        if not levels or il not in levels:
+            return None, False
+        cnt = self._counters.setdefault(nid, {})
+        cnt[il] = cnt.get(il, levels[il]["start"] - 1) + 1
+        for k in [k for k in cnt if k > il]:
+            del cnt[k]
+        lvl = levels[il]
+        if lvl["fmt"] == "bullet":
+            return None, True
+        text = lvl["text"]
+        for k in range(8, -1, -1):
+            if f"%{k + 1}" in text:
+                lk = levels.get(k, {"fmt": "decimal", "start": 1})
+                val = cnt.get(k, lk["start"])
+                text = text.replace(f"%{k + 1}", self._fmt_num(val, lk["fmt"]))
+        return text.strip(), False
+
+    # -- notes, images ----------------------------------------------------------------------
+
+    def _load_notes(self, part: str, kind: str) -> dict[str, str]:
+        try:
+            with zipfile.ZipFile(self.path) as z:
+                if part not in z.namelist():
+                    return {}
+                xml = z.read(part)
+        except zipfile.BadZipFile:
+            return {}
+        from lxml import etree
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+        root = etree.fromstring(xml, parser)
+        W = lambda n: self._q("w", n)  # noqa: E731
+        out = {}
+        for note in root.findall(W(kind)):
+            if note.get(W("type")) in ("separator", "continuationSeparator"):
+                continue
+            nid = note.get(W("id")) or ""
+            if not re.fullmatch(r"-?\d{1,9}", nid):       # an id is a number; anything else is not a note
+                continue
+            text = re.sub(r"\s+", " ", "".join(t.text or "" for t in note.iter(W("t")))).strip()
+            out[("e" if kind == "endnote" else "") + nid] = text
+        return out
+
+    def _image_ref(self, node) -> dict | None:
+        """Describe a w:drawing / w:pict: file name in the package, alt text, and the extracted path."""
+        rid = None
+        name = descr = ""
+        docPr = node.find(".//" + self._q("wp", "docPr"))
+        if docPr is not None:
+            name = docPr.get("name") or ""
+            descr = docPr.get("descr") or docPr.get("title") or ""
+        blip = node.find(".//" + self._q("a", "blip"))
+        if blip is not None:
+            rid = blip.get(self._q("r", "embed")) or blip.get(self._q("r", "link"))
+        else:
+            imd = node.find(".//" + self._q("v", "imagedata"))
+            if imd is not None:
+                rid = imd.get(self._q("r", "id"))
+        clean = lambda s: re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f\[\]]", " ", s or "")).strip()[:200]  # noqa: E731
+        name, descr = clean(name), clean(descr)
+        fname = ""
+        saved = ""
+        if rid and rid in self._doc.part.rels:
+            rel = self._doc.part.rels[rid]
+            fname = clean(Path(rel.target_ref).name)
+            out_dir = getattr(self.opts, "images", None)
+            ctype = "" if rel.is_external else (getattr(rel.target_part, "content_type", "") or "")
+            # Only real images, under a name this script chooses: the package name is untrusted
+            ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp",
+                   "image/tiff": "tif", "image/x-emf": "emf", "image/x-wmf": "wmf",
+                   "image/svg+xml": "svg", "image/webp": "webp"}.get(ctype)
+            if out_dir and ext:
+                out_dir = Path(out_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                n = len(self._images) + 1
+                for attempt in range(1000):
+                    target = out_dir / f"figure-{n:03d}{'' if attempt == 0 else f'-{attempt}'}.{ext}"
+                    try:
+                        with open(target, "xb") as f:
+                            f.write(rel.target_part.blob)
+                        break
+                    except FileExistsError:
+                        continue
+                # path as the Markdown's reader will resolve it: relative to the .md's folder when
+                # known (images_base), always with forward slashes
+                base = getattr(self.opts, "images_base", None)
+                try:
+                    saved = target.resolve().relative_to(Path(base).resolve()).as_posix() if base else str(target)
+                except ValueError:
+                    saved = str(target)
+            dims = self._image_dims(rel.target_part.blob) if not rel.is_external else None
+        else:
+            dims = None
+        info = {"file": fname, "name": name, "alt": descr, "saved": saved,
+                "size": f"{dims[0]}x{dims[1]}" if dims else "",
+                "placeholder": bool(dims and dims[0] <= 2 and dims[1] <= 2)}
+        self._images.append(info)
+        return info
+
+    @staticmethod
+    def _image_dims(blob: bytes) -> tuple[int, int] | None:
+        """Pixel size from the header of PNG, GIF, BMP or JPEG; None for other formats."""
+        import struct
+        try:
+            if blob[:8] == b"\x89PNG\r\n\x1a\n":
+                return struct.unpack(">II", blob[16:24])
+            if blob[:6] in (b"GIF87a", b"GIF89a"):
+                return struct.unpack("<HH", blob[6:10])
+            if blob[:2] == b"BM":
+                return struct.unpack("<ii", blob[18:26])
+            if blob[:2] == b"\xff\xd8":
+                i = 2
+                while i + 9 < len(blob):
+                    if blob[i] != 0xFF:
+                        return None
+                    marker = blob[i + 1]
+                    seg = struct.unpack(">H", blob[i + 2:i + 4])[0]
+                    if marker in (0xC0, 0xC1, 0xC2):
+                        h, w = struct.unpack(">HH", blob[i + 5:i + 9])
+                        return w, h
+                    i += 2 + seg
+        except (struct.error, IndexError):
+            return None
+        return None
+
+    # -- paragraph text -----------------------------------------------------------------------
+
+    _BOX_DEPTH = 3          # text boxes nested deeper than this are not read (crafted files only)
+
+    def _box_lines(self, box, depth: int) -> str:
+        """Text of one text box: its direct paragraphs only. A box inside a paragraph is handled
+        by that paragraph's own walk at depth+1, so no node is visited twice."""
+        if depth > self._BOX_DEPTH:
+            return ""
+        W = self._q("w", "")
+        lines = []
+        for p in box.findall(W + "p") + box.findall(W + "tbl//" + W + "p"):
+            inner: list[str] = []
+            inner_boxes: list[str] = []
+            self._collect(p, inner, inner_boxes, depth + 1)
+            t = "".join(inner).strip()
+            if t:
+                lines.append(t)
+            lines += inner_boxes
+        return "\n".join(lines)
+
+    def _collect(self, node, parts: list[str], boxes: list[str], depth: int = 0) -> None:
+        """Walk a paragraph's XML in order. Text boxes go to `boxes`, deletions and VML fallbacks
+        are skipped, footnote marks and figures become inline markers."""
+        W = self._q("w", "")
+        for child in node:
+            tag = child.tag
+            if not isinstance(tag, str):
+                continue
+            local = tag.rsplit("}", 1)[-1]
+            if tag == self._q("mc", "AlternateContent"):
+                choice = child.find(self._q("mc", "Choice"))
+                self._collect(choice if choice is not None else child, parts, boxes, depth)
+                continue
+            if local == "txbxContent":
+                text = self._box_lines(child, depth)
+                if text:
+                    boxes.append(text)
+                continue
+            if tag in (W + "del", W + "moveFrom", W + "instrText", W + "delText"):
+                continue
+            if tag == W + "t" or tag == self._q("m", "t"):
+                parts.append(child.text or "")
+            elif tag == W + "tab":
+                parts.append("\t")
+            elif tag in (W + "br", W + "cr"):
+                parts.append("\n")
+            elif tag == W + "footnoteReference":
+                parts.append(f"[^{child.get(W + 'id')}]")
+            elif tag == W + "endnoteReference":
+                parts.append(f"[^e{child.get(W + 'id')}]")
+            elif tag in (W + "drawing", W + "pict", W + "object"):
+                # a drawing is a text box, a picture, or both (a picture inside a box).
+                # Only the outermost boxes here; a box inside a box is reached through its
+                # paragraph's own walk, so nothing is read twice.
+                for box in child.iter(W + "txbxContent"):
+                    anc = box.getparent()
+                    nested = False
+                    while anc is not None and anc is not child:
+                        if anc.tag == W + "txbxContent":
+                            nested = True
+                            break
+                        anc = anc.getparent()
+                    if nested:
+                        continue
+                    text = self._box_lines(box, depth)
+                    if text:
+                        boxes.append(text)
+                has_pic = (child.find(".//" + self._q("a", "blip")) is not None
+                           or child.find(".//" + self._q("v", "imagedata")) is not None)
+                if has_pic:
+                    info = self._image_ref(child)
+                    if info and (info["file"] or info["alt"]):
+                        label = info["saved"] or info["file"] or info["name"]
+                        size = f" {info['size']}" if info["size"] else ""
+                        note = " (placeholder image, no visual content)" if info["placeholder"] else ""
+                        parts.append(f"[figure: {label}{size}{note}" + (f" — {info['alt']}" if info["alt"] else "") + "]")
+                continue
+            else:
+                self._collect(child, parts, boxes, depth)
+
+    def _para(self, paragraph) -> tuple[str, list[str]]:
+        parts: list[str] = []
+        boxes: list[str] = []
+        self._collect(paragraph._p, parts, boxes)
+        return "".join(parts), boxes
+
+    def _style_name(self, paragraph) -> str:
+        try:
+            return (paragraph.style.name or "") if paragraph.style else ""
+        except Exception:
+            return ""
+
+    def _heading_level(self, paragraph) -> int:
+        style = paragraph.style
+        seen = 0
+        while style is not None and seen < 10:
+            name = style.name or ""
+            m = re.match(r"(?:Heading|見出し)\s*(\d)", name)
+            if m:
+                return int(m[1])
+            if name in ("Title", "表題"):
+                return 1
+            style = style.base_style
+            seen += 1
         return 0
 
-    @staticmethod
-    def _is_list(paragraph) -> bool:
-        name = (paragraph.style.name or "") if paragraph.style else ""
-        if "List" in name or "箇条書き" in name or "段落番号" in name:
-            return True
-        return paragraph._p.pPr is not None and paragraph._p.pPr.numPr is not None
+    def _is_toc_style(self, paragraph) -> bool:
+        return re.match(r"(?:toc|目次)\s*\d", self._style_name(paragraph), re.I) is not None
 
-    @staticmethod
-    def _para_text(paragraph) -> str:
-        """Text including hyperlinks and tracked insertions; deletions are skipped."""
-        from docx.oxml.ns import qn
-        parts = []
-        for node in paragraph._p.iter():
-            if node.tag == qn("w:t"):
-                parts.append(node.text or "")
-            elif node.tag == qn("w:tab"):
-                parts.append("\t")
-            elif node.tag == qn("w:br"):
-                parts.append("\n")
-        return "".join(parts)
+    def _is_caption(self, paragraph) -> bool:
+        return self._style_name(paragraph) in ("Caption", "図表番号")
+
+    # -- body walk ------------------------------------------------------------------------
 
     def _iter_body(self, doc):
-        """Yield ('p', paragraph) / ('t', table) in document order."""
+        """Yield ('p', paragraph) / ('t', table) / ('toc', n_lines) in document order, descending
+        into content controls (w:sdt) instead of skipping what they wrap."""
         from docx.table import Table
         from docx.text.paragraph import Paragraph
-        from docx.oxml.ns import qn
-        for child in doc.element.body.iterchildren():
-            if child.tag == qn("w:p"):
-                yield "p", Paragraph(child, doc)
-            elif child.tag == qn("w:tbl"):
-                yield "t", Table(child, doc)
+        W = lambda n: self._q("w", n)  # noqa: E731
+
+        def walk(container):
+            for child in container.iterchildren():
+                if child.tag == W("p"):
+                    yield "p", Paragraph(child, doc)
+                elif child.tag == W("tbl"):
+                    yield "t", Table(child, doc)
+                elif child.tag == W("sdt"):
+                    gallery = child.find(".//" + W("docPartGallery"))
+                    content = child.find(W("sdtContent"))
+                    if gallery is not None and "Table of Contents" in (gallery.get(W("val")) or ""):
+                        yield "toc", len(content.findall(".//" + W("p"))) if content is not None else 0
+                    elif content is not None:
+                        yield from walk(content)
+        yield from walk(doc.element.body)
 
     def _table_rows(self, table) -> list[list[str]]:
         rows = []
@@ -862,17 +1234,23 @@ class DocxHandler(Handler):
             cells = []
             prev = None
             for cell in row.cells:
-                # python-docx repeats merged cells; collapse the repeats.
-                if cell._tc is prev:
+                if cell._tc is prev:          # python-docx repeats horizontally merged cells
                     cells.append("")
                 else:
-                    cells.append("\n".join(p.text for p in cell.paragraphs).strip())
+                    lines = []
+                    for p in cell.paragraphs:
+                        text, boxes = self._para(p)
+                        label, bullet = self._label(self._num_pr(p))
+                        text = text.strip()
+                        if text:
+                            lines.append((("• " if bullet else (label + " ") if label else "") + text))
+                        lines += boxes
+                    cells.append("\n".join(lines))
                 prev = cell._tc
             rows.append(cells)
         return rows
 
     def _comments(self) -> list[dict]:
-        """Comments via raw XML so it works on any python-docx version."""
         try:
             with zipfile.ZipFile(self.path) as z:
                 if "word/comments.xml" not in z.namelist():
@@ -880,17 +1258,12 @@ class DocxHandler(Handler):
                 xml = z.read("word/comments.xml")
         except zipfile.BadZipFile:
             return []
-        # lxml ships with python-docx; disable entity resolution so a crafted file can't XXE us.
         from lxml import etree
-        ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
         parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
         root = etree.fromstring(xml, parser)
-        out = []
-        for c in root.findall("w:comment", ns):
-            text = "".join(t.text or "" for t in c.iter("{%s}t" % ns["w"]))
-            out.append({"author": c.get("{%s}author" % ns["w"]), "date": c.get("{%s}date" % ns["w"]),
-                        "text": text})
-        return out
+        W = lambda n: self._q("w", n)  # noqa: E731
+        return [{"author": c.get(W("author")), "date": c.get(W("date")),
+                 "text": "".join(t.text or "" for t in c.iter(W("t")))} for c in root.findall(W("comment"))]
 
     def _has_tracked_changes(self) -> bool:
         try:
@@ -900,52 +1273,82 @@ class DocxHandler(Handler):
             return False
         return b"<w:ins " in xml or b"<w:del " in xml
 
+    def _blocks(self, doc) -> list[dict]:
+        blocks: list[dict] = []
+        toc_run = 0
+        for kind, obj in self._iter_body(doc):
+            if kind == "toc":
+                blocks.append({"kind": "toc", "text": f"(table of contents field, {obj} entries)", "count": obj})
+                continue
+            if kind == "t":
+                if toc_run:
+                    blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
+                    toc_run = 0
+                blocks.append({"kind": "table", "rows": self._table_rows(obj), "text": ""})
+                continue
+            if self._is_toc_style(obj):
+                toc_run += 1
+                continue
+            if toc_run:
+                blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
+                toc_run = 0
+            text, boxes = self._para(obj)
+            text = text.strip()
+            label, bullet = self._label(self._num_pr(obj))
+            lvl = self._heading_level(obj)
+            one_line = re.sub(r"\s+", " ", text)      # headings, list items and captions are single lines
+            if text:
+                if lvl or self._is_caption(obj) or bullet or label is not None:
+                    text = one_line
+                if lvl:
+                    blocks.append({"kind": "heading", "level": lvl, "label": label or "", "text": text})
+                elif self._is_caption(obj):
+                    blocks.append({"kind": "caption", "text": (label + " " if label else "") + text})
+                elif bullet or label is not None:
+                    il = (self._num_pr(obj) or ("", 0))[1]
+                    if il == 0:
+                        # "List Bullet 2" / "箇条書き 2" express depth by style name, not ilvl
+                        m = re.search(r"(\d)\s*$", self._style_name(obj))
+                        if m and int(m[1]) > 1:
+                            il = int(m[1]) - 1
+                    blocks.append({"kind": "list", "level": il, "label": None if bullet else label, "text": text})
+                else:
+                    blocks.append({"kind": "para", "text": text})
+            for b in boxes:
+                blocks.append({"kind": "textbox", "text": b})
+        if toc_run:
+            blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
+        return blocks
+
     def outline(self) -> dict:
         doc = self._open()
-        headings = []
-        n_par = n_tbl = 0
-        for kind, obj in self._iter_body(doc):
-            if kind == "t":
-                n_tbl += 1
-                continue
-            n_par += 1
-            lvl = self._heading_level(obj)
-            if lvl:
-                headings.append({"level": lvl, "text": obj.text.strip()})
+        blocks = self._blocks(doc)
+        headings = [{"level": b["level"], "text": (b["label"] + " " if b["label"] else "") + b["text"]}
+                    for b in blocks if b["kind"] == "heading"]
         cp = doc.core_properties
         return {"file": str(self.path), "type": "docx",
                 "title": cp.title, "author": cp.author, "modified": str(cp.modified) if cp.modified else None,
-                "paragraphs": n_par, "tables": n_tbl, "sections": len(doc.sections),
-                "headings": headings, "comments": len(self._comments()),
-                "tracked_changes": self._has_tracked_changes()}
+                "paragraphs": sum(1 for b in blocks if b["kind"] in ("para", "list", "heading", "caption")),
+                "tables": sum(1 for b in blocks if b["kind"] == "table"),
+                "sections": len(doc.sections), "headings": headings, "comments": len(self._comments()),
+                "tracked_changes": self._has_tracked_changes(), "footnotes": len(self._notes),
+                "images": len(self._images), "textboxes": sum(1 for b in blocks if b["kind"] == "textbox")}
 
     def dump(self) -> dict:
         doc = self._open()
-        blocks = []
-        for kind, obj in self._iter_body(doc):
-            if kind == "t":
-                blocks.append({"kind": "table", "rows": self._table_rows(obj)})
-                continue
-            text = self._para_text(obj).strip()
-            if not text:
-                continue
-            lvl = self._heading_level(obj)
-            if lvl:
-                blocks.append({"kind": "heading", "level": lvl, "text": text})
-            elif self._is_list(obj):
-                blocks.append({"kind": "list", "text": text})
-            else:
-                blocks.append({"kind": "para", "text": text})
+        blocks = self._blocks(doc)
         headers = [p.text for s in doc.sections for p in s.header.paragraphs if p.text.strip()]
         footers = [p.text for s in doc.sections for p in s.footer.paragraphs if p.text.strip()]
         return {"file": str(self.path), "type": "docx", "blocks": blocks,
                 "headers": sorted(set(headers)), "footers": sorted(set(footers)),
-                "comments": self._comments(), "tracked_changes": self._has_tracked_changes()}
+                "comments": self._comments(), "tracked_changes": self._has_tracked_changes(),
+                "notes": self._notes, "images": self._images}
 
     def to_markdown(self, data: dict) -> str:
         out = md_title(data["file"])
         if "headings" in data:
-            out.append(f"{data['paragraphs']} paragraphs · {data['tables']} tables · "
+            out.append(f"{data['paragraphs']} paragraphs · {data['tables']} tables · {data['images']} figures · "
+                       f"{data['footnotes']} notes · {data['textboxes']} text boxes · "
                        f"{data['comments']} comments · tracked changes: {data['tracked_changes']}")
             if data.get("title") or data.get("author"):
                 out.append(f"Title: {data.get('title') or '-'} · Author: {data.get('author') or '-'} · Modified: {data.get('modified') or '-'}")
@@ -962,21 +1365,41 @@ class DocxHandler(Handler):
             out.append("> Header: " + " / ".join(data["headers"]))
         if data["footers"]:
             out.append("> Footer: " + " / ".join(data["footers"]))
-        if data["headers"] or data["footers"]:
+        if data["images"] and not any(i["saved"] for i in data["images"]):
+            out.append(f"> {len(data['images'])} figure(s) are referenced as [figure: name]; pass --images DIR to extract them.")
+        if data["headers"] or data["footers"] or data["images"]:
             out.append("")
         blocks = data["blocks"]
         for i, b in enumerate(blocks):
-            if b["kind"] == "heading":
-                out.append("#" * (b["level"] + 1) + " " + b["text"])
-            elif b["kind"] == "list":
-                out.append("- " + b["text"])
-                # keep consecutive list items together
+            k = b["kind"]
+            if k == "heading":
+                out.append("#" * (b["level"] + 1) + " " + (b["label"] + " " if b.get("label") else "") + b["text"])
+            elif k == "list":
+                indent = "  " * b.get("level", 0)
+                label = b.get("label")
+                if label is None:
+                    out.append(f"{indent}- {b['text']}")
+                elif re.fullmatch(r"\d+\.", label):
+                    out.append(f"{indent}{label} {b['text']}")
+                else:
+                    out.append(f"{indent}- {label} {b['text']}")
                 if i + 1 < len(blocks) and blocks[i + 1]["kind"] == "list":
                     continue
-            elif b["kind"] == "table":
+            elif k == "table":
                 out.append(md_table(b["rows"]))
+            elif k == "textbox":
+                out.append("> **Text box:** " + md_para(b["text"]).replace("\n", "\n> "))
+            elif k == "caption":
+                out.append("*" + md_para(b["text"]) + "*")
+            elif k == "toc":
+                out.append(f"_{b['text']}; the headings below are the live structure._")
             else:
                 out.append(md_para(b["text"]))
+            out.append("")
+        if data.get("notes"):
+            out.append("## Notes")
+            for nid, text in data["notes"].items():
+                out.append(f"[^{nid}]: {md_para(text)}")
             out.append("")
         if data["comments"]:
             out += ["## Comments", md_table(
@@ -1583,6 +2006,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
     ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
+    ap.add_argument("--images", type=Path, metavar="DIR",
+                    help="docx: extract figures into DIR and reference them by path (default: name only)")
     opts = ap.parse_args(argv)
 
     if not opts.file.exists():
@@ -1599,6 +2024,8 @@ def main(argv: list[str] | None = None) -> int:
     if opts.profile:
         text = make_profile(opts.file, ext)
     else:
+        # figure paths are written relative to the Markdown file when one is being written
+        opts.images_base = opts.out.parent if opts.out else None
         h = cls(opts.file, opts)
         data = h.outline() if opts.outline else h.dump()
         if opts.json:

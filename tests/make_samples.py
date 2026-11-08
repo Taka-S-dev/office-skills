@@ -179,6 +179,102 @@ t.cell(1, 0).text = "A"; t.cell(1, 1).text = "100"
 d.sections[0].header.paragraphs[0].text = "社外秘"
 d.save(out / "sample.docx")
 
+# --- spec.docx: what a real specification contains and a plain walk loses ---
+# auto-numbered headings (numbering.xml), nested lists, a footnote, a figure with alt text,
+# a floating text box, an equation, and a table-of-contents field.
+import struct as _struct
+import zlib as _zlib
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn, nsdecls
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part
+
+sd = docx.Document()
+numbering = sd.part.numbering_part.element
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+abstract = parse_xml(
+    f'<w:abstractNum {nsdecls("w")} w:abstractNumId="900">'
+    '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="第%1章"/></w:lvl>'
+    '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2"/></w:lvl>'
+    '<w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2.%3"/></w:lvl>'
+    '</w:abstractNum>')
+num = parse_xml(f'<w:num {nsdecls("w")} w:numId="900"><w:abstractNumId w:val="900"/></w:num>')
+# abstractNum elements must precede num elements in numbering.xml
+first_num = numbering.find(qn("w:num"))
+(first_num.addprevious(abstract) if first_num is not None else numbering.append(abstract))
+numbering.append(num)
+
+
+def numbered(paragraph, ilvl: int, num_id: int = 900):
+    pPr = paragraph._p.get_or_add_pPr()
+    np_ = OxmlElement("w:numPr")
+    il = OxmlElement("w:ilvl"); il.set(qn("w:val"), str(ilvl))
+    ni = OxmlElement("w:numId"); ni.set(qn("w:val"), str(num_id))
+    np_.append(il); np_.append(ni); pPr.append(np_)
+
+
+sd.add_heading("注文処理仕様書", 0)
+toc = parse_xml(
+    f'<w:sdt {nsdecls("w")}><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>'
+    '<w:sdtContent><w:p><w:r><w:t>第1章 概要 ....... 1</w:t></w:r></w:p><w:p><w:r><w:t>1.1 目的 ....... 1</w:t></w:r></w:p>'
+    '<w:p><w:r><w:t>第2章 データ形式 ....... 2</w:t></w:r></w:p></w:sdtContent></w:sdt>')
+sd.paragraphs[-1]._p.addnext(toc)          # right after the title, where Word puts it
+h = sd.add_heading("概要", 1); numbered(h, 0)
+h = sd.add_heading("目的", 2); numbered(h, 1)
+p = sd.add_paragraph("本書は注文データの形式を定める。")
+# footnote reference in the paragraph, note body in a footnotes part
+r = p.add_run(); fr = OxmlElement("w:footnoteReference"); fr.set(qn("w:id"), "1"); r._r.append(fr)
+footnotes_xml = (
+    f'<w:footnotes {nsdecls("w")}>'
+    '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+    '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+    '<w:footnote w:id="1"><w:p><w:r><w:t>旧版（第2版）の形式は対象外。</w:t></w:r></w:p></w:footnote></w:footnotes>')
+fn_part = Part(PackURI("/word/footnotes.xml"),
+               "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+               footnotes_xml.encode("utf-8"), sd.part.package)
+sd.part.relate_to(fn_part, RT.FOOTNOTES)
+h = sd.add_heading("用語", 2); numbered(h, 1)
+sd.add_paragraph("必須項目", style="List Bullet")
+sd.add_paragraph("任意項目", style="List Bullet")
+q = sd.add_paragraph("省略可能な拡張項目", style="List Bullet 2")
+h = sd.add_heading("データ形式", 1); numbered(h, 0)
+h = sd.add_heading("見出し部", 2); numbered(h, 1)
+h = sd.add_heading("件数項目", 3); numbered(h, 2)
+sd.add_paragraph("合計金額は次式で求める。")
+eq = parse_xml('<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+               '<m:oMath><m:r><m:t>T = P + N × 4</m:t></m:r></m:oMath></m:oMathPara>')
+sd.add_paragraph()._p.append(eq)
+sd.add_paragraph("手順は以下の順に行う。")
+sd.add_paragraph("注文を受け付ける", style="List Number")
+sd.add_paragraph("在庫を確認する", style="List Number")
+sd.add_paragraph("出荷を指示する", style="List Number")
+h = sd.add_heading("明細部", 2); numbered(h, 1)
+# a 1x1 PNG, inline figure with alt text, plus a caption
+png = (b"\x89PNG\r\n\x1a\n" + _struct.pack(">I", 13) + b"IHDR" + _struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+png = png[:8] + png[8:] + _struct.pack(">I", _zlib.crc32(png[12:]) & 0xffffffff)
+raw = _zlib.compress(b"\x00\xff\x00\x00")
+png += _struct.pack(">I", len(raw)) + b"IDAT" + raw + _struct.pack(">I", _zlib.crc32(b"IDAT" + raw) & 0xffffffff)
+png += _struct.pack(">I", 0) + b"IEND" + _struct.pack(">I", _zlib.crc32(b"IEND") & 0xffffffff)
+(out / "fig.png").write_bytes(png)
+sd.add_picture(str(out / "fig.png"))
+docpr = sd.element.body.findall(".//" + qn("wp:docPr"))[-1]
+docpr.set("descr", "データの全体構成図")
+sd.add_paragraph("図 1 データの構成", style="Caption")
+tb = parse_xml(
+    f'<w:p {nsdecls("w")} xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:v="urn:schemas-microsoft-com:vml">'
+    '<w:r><w:t>明細部は見出し部の直後に続く。</w:t></w:r>'
+    '<w:r><mc:AlternateContent><mc:Choice Requires="wps"><w:drawing><wp:anchor><wp:docPr id="7" name="注記"/>'
+    '<wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>注記: 改訂時は見出し部も見直すこと</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp>'
+    '</wp:anchor></w:drawing></mc:Choice><mc:Fallback><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>注記: 改訂時は見出し部も見直すこと</w:t></w:r></w:p>'
+    '</w:txbxContent></v:textbox></v:shape></w:pict></mc:Fallback></mc:AlternateContent></w:r></w:p>')
+sd.paragraphs[-1]._p.addnext(tb)           # keeps sectPr last, as Word requires
+sd.save(out / "spec.docx")
+(out / "fig.png").unlink()
+
 # --- pptx ---
 from pptx import Presentation
 from pptx.util import Inches
