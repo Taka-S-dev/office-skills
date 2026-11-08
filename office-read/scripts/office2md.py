@@ -102,6 +102,93 @@ def _xd():
     return xlsx_drawing
 
 
+def _next_circled(prev_heading: str, text: str) -> bool:
+    """text is a short line starting with the circled number after the one that starts
+    prev_heading (③ then ④ ...)."""
+    m = re.match(r"^\s*([①-⑲])", prev_heading)
+    t = re.match(r"^\s*([②-⑳])\s*\S.{0,39}$", text)
+    return bool(m and t and ord(t[1]) == ord(m[1]) + 1 and "。" not in text)
+
+
+def _demote_listed_subheadings(blocks: list[dict]) -> list[dict]:
+    """（１）（２） lines promoted to headings with nothing between them are a list (a summary of
+    the subsections that follow), not headings: they go back to paragraphs."""
+    out = [dict(b) for b in blocks]
+    i = 0
+    while i < len(out):
+        j = i
+        while j < len(out) and out[j].get("promoted"):
+            j += 1
+        if j - i >= 2:
+            for b in out[i:j]:
+                b.pop("promoted")
+                b.update(kind="para", level=None)
+        i = max(j, i + 1)
+    for b in out:
+        b.pop("promoted", None)
+    return out
+
+
+def _join_split_tables(blocks: list[dict]) -> list[dict]:
+    """A table broken across a page with an empty paragraph between the parts comes out as two
+    tables with the same columns and nothing between them: join them, dropping the second part's
+    first row when it repeats the first part's header."""
+    out: list[dict] = []
+    for b in blocks:
+        prev = out[-1] if out else None
+        if (b["kind"] == "table" and prev and prev["kind"] == "table" and b["rows"] and prev["rows"]
+                and max(map(len, b["rows"])) == max(map(len, prev["rows"])) > 1):
+            rows = b["rows"][1:] if b["rows"][0] == prev["rows"][0] else b["rows"]
+            out[-1] = {**prev, "rows": prev["rows"] + rows}
+            continue
+        out.append(b)
+    return out
+
+
+def render_word_table(rows: list[list[str]], header_row: bool = True, keep_table: bool = False) -> list[str]:
+    """A Word table as Markdown. A first row whose cells all hold the same text is a title spanning
+    the table; it goes above the table instead of naming every column. Columns empty in every
+    other row (spacers in a form grid) are dropped. A one-column table is a framed box, not a
+    table: it comes out as a quoted block whose lines stay lines."""
+    if not rows:
+        return []
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    out = []
+    if width > 1 and len(rows) > 1 and len(set(rows[0])) == 1 and rows[0][0].strip():
+        out += [md_para(rows[0][0].replace("\n", " / ")), ""]     # as written: moving it adds no emphasis
+        rows = rows[1:]
+        header = True
+    else:
+        header = False
+    keep = [c for c in range(width) if any(r[c].strip() for r in rows)]
+    rows = [[r[c] for c in keep] for r in rows]
+    if not keep:
+        return out[:-1]
+    if len(keep) == 1 and keep_table:
+        return out + [md_table(rows, header=[""])]   # a list of items, each row one; no column name
+    if len(keep) == 1:
+        quoted = []
+        for r in rows:
+            if not r[0].strip():
+                continue
+            lines = r[0].split("\n")
+            quoted += ["> " + md_para(line) + ("  " if k < len(lines) - 1 else "") if line.strip() else ">"
+                       for k, line in enumerate(lines)]
+            quoted.append("")                    # each row is its own framed box
+        return out + quoted[:-1]
+    return out + [md_table(rows, header=[""] * len(keep)) if header or not header_row else md_table(rows)]
+
+
+def radicals(text: str) -> str:
+    """Kangxi radical and CJK radical-supplement characters (U+2F00-2FDF, U+2E80-2EFF) that look
+    like ideographs (⽅, ⽥) turned into those ideographs, so 地方 and 田園 can be searched."""
+    if not any("\u2e80" <= ch <= "\u2fdf" for ch in text):
+        return text
+    import unicodedata
+    return "".join(unicodedata.normalize("NFKC", ch) if "\u2e80" <= ch <= "\u2fdf" else ch for ch in text)
+
+
 def render_object(o: dict) -> list[str]:
     """A SmartArt, chart or embedded object as a quoted block (Word and PowerPoint)."""
     name = md_escape(o.get("name") or "")
@@ -1186,6 +1273,7 @@ class DocxHandler(Handler):
         docx = need("docx", "python-docx")
         doc = docx.Document(self.path)
         self._doc = doc
+        self._unwrap_table_controls(doc)
         self._load_numbering(doc)
         self._counters: dict[str, dict[int, int]] = {}
         self._notes = self._load_notes("word/footnotes.xml", "footnote") | self._load_notes("word/endnotes.xml", "endnote")
@@ -1196,6 +1284,28 @@ class DocxHandler(Handler):
         self._changes: dict[str, dict] = {}
         self._comment_cache: dict[str, dict] | None = None
         return doc
+
+    def _unwrap_table_controls(self, doc) -> None:
+        """A content control around a whole cell or row (w:sdt in w:tr or w:tbl) hides that cell
+        from python-docx, which reads only direct w:tc / w:tr children: a form template's answer
+        cells then vanish. The control's cells are moved up in place of it, in memory only."""
+        q = self._q
+        kids = {q("w", "tbl"): (q("w", "tr"),), q("w", "tr"): (q("w", "tc"),),
+                q("w", "tc"): (q("w", "p"), q("w", "tbl"))}          # and paragraphs inside a cell
+        for _ in range(3):                                        # nested controls, a few levels deep
+            changed = False
+            for sdt in list(doc.element.body.iter(q("w", "sdt"))):
+                parent = sdt.getparent()
+                content = sdt.find(q("w", "sdtContent"))
+                if parent is None or parent.tag not in kids or content is None:
+                    continue
+                at = parent.index(sdt)
+                for k, child in enumerate([c for c in content if c.tag in kids[parent.tag] + (q("w", "sdt"),)]):
+                    parent.insert(at + k, child)
+                parent.remove(sdt)
+                changed = True
+            if not changed:
+                break
 
     # -- numbering ------------------------------------------------------------------------
 
@@ -1535,7 +1645,7 @@ class DocxHandler(Handler):
                     parts.append(text)
                 continue
             if tag == W + "t" or tag == self._q("m", "t"):
-                parts.append(child.text or "")
+                parts.append(radicals(child.text or ""))
             elif tag == W + "tab":
                 parts.append("\t")
             elif tag in (W + "br", W + "cr"):
@@ -1707,6 +1817,19 @@ class DocxHandler(Handler):
             seen += 1
         return 0
 
+    _SUBHEADING = re.compile(r"^（[0-9０-９]{1,2}）\s?\S")
+
+    def _looks_like_subheading(self, paragraph, text: str) -> bool:
+        """A short "（１）title" line in a body-text style, the way many Japanese specifications
+        write their subsections: no sentence end, no tab (a tab means a TOC-like line), not
+        indented (an indented "（１）" is a list item), full-width brackets only ("(1)" is a list)."""
+        try:
+            indent = paragraph.paragraph_format.left_indent or 0
+        except (AttributeError, ValueError):
+            indent = 0
+        return (bool(self._SUBHEADING.match(text)) and not indent and len(text) <= 30 and "\t" not in text and "\n" not in text
+                and not text.endswith(("。", "．", "：", ":")) and self._heading_level(paragraph) == 0)
+
     def _is_toc_style(self, paragraph) -> bool:
         return re.match(r"(?:toc|目次)\s*\d", self._style_name(paragraph), re.I) is not None
 
@@ -1753,7 +1876,7 @@ class DocxHandler(Handler):
                 text = text.strip()
                 if text:
                     lines.append((("• " if bullet else (label + " ") if label else "") + text))
-                lines += boxes
+                lines += [b if b.startswith(self.OBJ_MARK) else "[text box] " + b for b in boxes]
             elif child.tag == W("tbl") and depth < 3:
                 for row in self._table_rows(Table(child, cell), depth + 1):
                     joined = " | ".join(c.replace("\n", " / ") for c in row if c.strip())
@@ -1770,12 +1893,76 @@ class DocxHandler(Handler):
                 if cell._tc is prev:          # python-docx repeats horizontally merged cells
                     # in a header row the spanning title names each column under it ("項目 | 項目"
                     # over "名称 | 桁数"); in a body row the repeat would only duplicate text
-                    cells.append(cells[-1] if cells and (not rows or self._header_row(row)) else "")
+                    cells.append(cells[-1] if cells and depth == 0 and (not rows or self._header_row(row)) else "")
                 else:
                     cells.append("\n".join(self._cell_lines(cell, depth)))
                 prev = cell._tc
             rows.append(cells)
         return rows
+
+    def _all_bold(self, paragraph) -> bool:
+        """Every run with text is bold, directly, by its character style or by the paragraph style."""
+        runs = [r for r in paragraph.runs if r.text.strip()]
+        if not runs:
+            return False
+        style_bold = bool(paragraph.style is not None and paragraph.style.font.bold)
+        return all(r.bold or (r.bold is None and (style_bold or (r.style is not None and r.style.font.bold)))
+                   for r in runs)
+
+    def _has_header(self, table) -> bool:
+        """Whether the first row names the columns. Not when the table only lays things out (no
+        borders anywhere: its own, its style's, its cells') or when its header is the shaded
+        columns on the left, the first row shaded like the rows under it: there row 1 is data,
+        and a reader would take its cells for column names."""
+        tbl, q = table._tbl, self._q
+        trs = tbl.findall(q("w", "tr"))
+        if not trs or self._header_row(table.rows[0]):
+            return True
+        if not self._has_borders(table):
+            return False
+
+        def shaded(tr):
+            out = []
+            for tc in tr.findall(q("w", "tc")):
+                shd = tc.find(q("w", "tcPr") + "/" + q("w", "shd"))
+                fill = ((shd.get(q("w", "fill")) or "") if shd is not None else "").lower()
+                out.append(fill not in ("", "auto", "ffffff"))
+            return out
+        if len(trs) >= 2:
+            first, second = shaded(trs[0]), shaded(trs[1])
+            k = next((i for i, v in enumerate(first) if not v), len(first))
+            if (first == second and 0 < k < len(first) and not any(first[k:])):
+                return False
+        return True
+
+    def _table_caption(self, table) -> str:
+        tblPr = table._tbl.find(self._q("w", "tblPr"))
+        cap = tblPr.find(self._q("w", "tblCaption")) if tblPr is not None else None
+        return re.sub(r"\s+", " ", cap.get(self._q("w", "val")) or "").strip()[:300] if cap is not None else ""
+
+    def _has_borders(self, table) -> bool:
+        q = self._q
+        on = lambda el: el is not None and any(  # noqa: E731
+            (b.get(q("w", "val")) or "") not in ("none", "nil", "") for b in el)
+        tbl = table._tbl
+        tblPr = tbl.find(q("w", "tblPr"))
+        own = tblPr.find(q("w", "tblBorders")) if tblPr is not None else None
+        if own is not None and len(own):
+            return on(own) or any(on(c) for c in tbl.iter(q("w", "tcBorders")))
+        if any(on(c) for c in tbl.iter(q("w", "tcBorders"))):
+            return True
+        try:
+            style = table.style                      # its own style, else the document's default
+        except (KeyError, ValueError, AttributeError):
+            return True
+        seen = 0
+        while style is not None and seen < 10:
+            pr = style.element.find(q("w", "tblPr"))
+            sb = pr.find(q("w", "tblBorders")) if pr is not None else None
+            if sb is not None and len(sb):
+                return on(sb)
+            style, seen = style.base_style, seen + 1
+        return False
 
     def _header_row(self, row) -> bool:
         trPr = row._tr.find(self._q("w", "trPr"))
@@ -1807,6 +1994,8 @@ class DocxHandler(Handler):
     def _blocks(self, doc) -> list[dict]:
         blocks: list[dict] = []
         toc_run = 0
+        last_level = 0
+        last_head: tuple[int, str] | None = None
         for kind, obj in self._iter_body(doc):
             if kind == "toc":
                 blocks.append({"kind": "toc", "text": f"(table of contents field, {obj} entries)", "count": obj})
@@ -1815,7 +2004,8 @@ class DocxHandler(Handler):
                 if toc_run:
                     blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
                     toc_run = 0
-                blocks.append({"kind": "table", "rows": self._table_rows(obj), "text": ""})
+                blocks.append({"kind": "table", "rows": self._table_rows(obj), "text": "",
+                               "header": self._has_header(obj), "caption": self._table_caption(obj)})
                 continue
             if self._is_toc_style(obj):
                 toc_run += 1
@@ -1831,8 +2021,18 @@ class DocxHandler(Handler):
             if text:
                 if lvl or self._is_caption(obj) or bullet or label is not None:
                     text = one_line
+                promoted = False
+                if not lvl and label is None and not bullet and self._looks_like_subheading(obj, text):
+                    lvl, promoted = min(6, last_level + 1), True
+                elif (not lvl and label is None and not bullet and last_head and _next_circled(last_head[1], text)
+                      and self._all_bold(obj)):
+                    lvl = last_head[0]           # "**④ title**" typed bold after the "③ title" heading
                 if lvl:
-                    blocks.append({"kind": "heading", "level": lvl, "label": label or "", "text": text})
+                    if not promoted:
+                        last_level = lvl         # siblings （１）（２） all sit one below the real heading
+                    last_head = (lvl, (label + " " if label else "") + text)    # ③ may be list numbering
+                    blocks.append({"kind": "heading", "level": lvl, "label": label or "", "text": text,
+                                   **({"promoted": True} if promoted else {})})
                 elif self._is_caption(obj):
                     blocks.append({"kind": "caption", "text": (label + " " if label else "") + text})
                 elif bullet or label is not None:
@@ -1844,7 +2044,9 @@ class DocxHandler(Handler):
                             il = int(m[1]) - 1
                     blocks.append({"kind": "list", "level": il, "label": None if bullet else label, "text": text})
                 else:
-                    blocks.append({"kind": "para", "text": text})
+                    # a whole bold short line: a sub-heading below the levels Markdown has, kept bold
+                    bold = len(text) <= 80 and "\n" not in text and self._all_bold(obj)
+                    blocks.append({"kind": "para", "text": text, **({"bold": True} if bold else {})})
             for b in boxes:
                 if b.startswith(self.OBJ_MARK):
                     o = self._objects[int(b[len(self.OBJ_MARK):])]
@@ -1853,7 +2055,7 @@ class DocxHandler(Handler):
                     blocks.append({"kind": "textbox", "text": b})
         if toc_run:
             blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
-        return blocks
+        return _join_split_tables(_demote_listed_subheadings(blocks))
 
     def outline(self) -> dict:
         doc = self._open()
@@ -1934,7 +2136,12 @@ class DocxHandler(Handler):
                 if i + 1 < len(blocks) and blocks[i + 1]["kind"] == "list":
                     continue
             elif k == "table":
-                out.append(md_table(b["rows"]))
+                if b.get("caption"):
+                    out += [f"Table: {md_para(b['caption'])}", ""]     # the title set in Table Properties > Alt Text
+                # a one-column table under its caption ("表3-7 ...") is a table the text refers to, not a box
+                captioned = i > 0 and (blocks[i - 1]["kind"] == "caption" or (
+                    blocks[i - 1]["kind"] == "para" and re.match(r"(?:表|Table)\s?[0-9０-９]", blocks[i - 1]["text"])))
+                out += render_word_table(b["rows"], b.get("header", True), keep_table=captioned)
             elif k == "textbox":
                 out.append("> **Text box:** " + md_para(b["text"]).replace("\n", "\n> "))
             elif k == "object":
@@ -1943,8 +2150,10 @@ class DocxHandler(Handler):
                 out.append("*" + md_para(b["text"]) + "*")
             elif k == "toc":
                 out.append(f"_{b['text']}; the headings below are the live structure._")
+            elif b.get("bold"):
+                out.append("**" + md_para(b["text"]).lstrip("\\") + "**")
             else:
-                out.append(md_para(b["text"]))
+                out.append(md_para(b["text"]).replace("\n", "  \n"))
             out.append("")
         if data.get("notes"):
             out.append("## Notes")

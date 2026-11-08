@@ -397,6 +397,23 @@ def main() -> int:
         o = run(READ, d / "ruby.docx")
         check("docx: furigana written ｜base《reading》, the word stays whole",
               "SNS等を通じた｜誹謗《ひぼう》中傷への対策を進める。" in o, o)
+        o = run(READ, d / "shapes.docx")
+        check("docx: （１） in body style is a subsection heading, a line break stays a break",
+              "### 対象業務\n\n#### （１）申請の受付" in o and "一行目の文  \n二行目の文" in o, o)
+        check("docx: （n） siblings share a level; a run of them with nothing between stays paragraphs",
+              "\n#### （２）審査の流れ" in o and "\n（１）概要について\n\n（２）詳細について" in o, o)
+        check("docx: a bold ④ after the ③ heading is its sibling; a borderless layout table has no header row",
+              "\n##### ③ 第三の施策" in o and "\n##### ④ 第四の施策" in o and "|  |  |\n|---|---|\n| ①開放 | ③安全 |" in o, o)
+        check("docx: a whole-bold short line stays bold; a one-column table under its caption stays a table",
+              "\n**ア 小項目の見出し**\n" in o and "表1-1　要件の一覧\n\n|  |\n|---|\n| 一つ目の要件 |\n| 二つ目の要件 |" in o, o)
+        check("docx: a cell and its text inside content controls are read; the table's alt-text title shown",
+              "Table: 回答の表" in o and "| 回答欄 | ここに入力してください |" in o, o)
+        check("docx: a table broken over a page is joined, the repeated header dropped",
+              "| 期限 | 月末 |\n| 提出先 | 窓口 |" in o, o)
+        check("docx: a one-column box is a quoted block, a spanning title row sits above its table, spacer column dropped",
+              "> 留意事項  \n> 箱の中の二行目" in o and "\n申請日\n\n|  |  |\n|---|---|\n| 氏名 | 山田 |" in o, o)
+        check("docx: text box in a cell marked, radical form read as the ideograph, notes numbered as displayed",
+              "[text box] 枠内の注記" in o and "地方の制度[^1][^2]" in o and "[^2]: 二番目の注" in o, o)
         code = "\n".join([
             "import xlsx_drawing as xd",
             "def sh(name, box, text='', prst='rect', **k): return {'kind': 'shape', 'name': name, 'box': box, 'text': text, 'prst': prst, **k}",

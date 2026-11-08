@@ -772,6 +772,81 @@ rp._p.append(parse_xml(
 rp.add_run("中傷への対策を進める。")
 rb.save(out / "ruby.docx")
 
+# --- shapes.docx: Word layouts that must be read as laid out ---------------------------------
+# a "（１）" subsection typed in body style, a line break inside a paragraph, a one-column framed
+# box, a table whose first row is a title spanning it with an empty spacer column, a text box in
+# a cell, a Kangxi radical typed for the ideograph, and footnotes whose ids are not 1 and 2
+sd = docx.Document()
+sd.add_heading("対象業務", level=2)
+sd.add_paragraph("（１）申請の受付")
+lb = sd.add_paragraph("一行目の文")
+lb.add_run().add_break()
+lb.add_run("二行目の文")
+sd.add_paragraph("（２）審査の流れ")
+sd.add_paragraph("審査は窓口で行う。")
+sd.add_paragraph("（１）概要について")         # a summary list of subsections: stays paragraphs
+sd.add_paragraph("（２）詳細について")
+for part, rows in ((1, (("項目", "内容"), ("期限", "月末"))), (2, (("項目", "内容"), ("提出先", "窓口")))):
+    tb = sd.add_table(rows=2, cols=2)       # one table broken over a page, the header repeated
+    for r, row in enumerate(rows):
+        for c, v in enumerate(row):
+            tb.cell(r, c).text = v
+    if part == 1:
+        sd.add_paragraph("")
+sd.add_heading("③ 第三の施策", level=4)        # ④ typed bold in body style is its sibling
+sd.add_paragraph("本文。")
+sd.add_paragraph().add_run("④ 第四の施策").bold = True
+sd.add_paragraph("本文。")
+sd.add_paragraph().add_run("ア 小項目の見出し").bold = True     # bold sub-heading below the last level
+sd.add_paragraph("表1-1　要件の一覧")                         # a caption typed as text
+req = sd.add_table(rows=2, cols=1)
+req.cell(0, 0).text = "一つ目の要件"
+req.cell(1, 0).text = "二つ目の要件"
+sd.add_paragraph("本文。")
+ctl = sd.add_table(rows=1, cols=2)           # an answer cell wrapped in a content control, as forms do
+ctl.cell(0, 0).text = "回答欄"
+tc = ctl.rows[0]._tr.tc_lst[1]
+tc.getparent().replace(tc, parse_xml(
+    f'<w:sdt xmlns:w="{W_NS}"><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>'
+    '<w:tc><w:tcPr/><w:sdt><w:sdtContent><w:p><w:r><w:t>ここに入力してください</w:t></w:r></w:p>'
+    '</w:sdtContent></w:sdt></w:tc></w:sdtContent></w:sdt>'))
+ctl._tbl.tblPr.append(parse_xml(f'<w:tblCaption xmlns:w="{W_NS}" w:val="回答の表"/>'))
+sd.add_paragraph("次の表。")
+lay = sd.add_table(rows=2, cols=2)           # no style, no borders: a layout, row 1 is data
+lay.style = None
+for r, row in enumerate((("①開放", "③安全"), ("②公平", "④浸透"))):
+    for c, v in enumerate(row):
+        lay.cell(r, c).text = v
+box = sd.add_table(rows=1, cols=1)
+box.cell(0, 0).text = "留意事項"
+box.cell(0, 0).add_paragraph("箱の中の二行目")
+grid = sd.add_table(rows=3, cols=3)
+title = grid.cell(0, 0).merge(grid.cell(0, 2))
+title.text = "申請日"
+grid.cell(1, 0).text = "氏名"; grid.cell(1, 2).text = "山田"
+grid.cell(2, 0).text = "住所"; grid.cell(2, 2).text = "東京都"
+cellbox = sd.add_table(rows=1, cols=2)
+cellbox.cell(0, 0).text = "備考"
+cellbox.cell(0, 1).paragraphs[0]._p.append(parse_xml(
+    f'<w:r xmlns:w="{W_NS}" xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:drawing><wp:inline>'
+    '<wp:extent cx="900000" cy="300000"/><wp:docPr id="7" name="Text Box 7"/><a:graphic>'
+    '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp>'
+    '<wps:txbx><w:txbxContent><w:p><w:r><w:t>枠内の注記</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+    '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'))
+note = sd.add_paragraph("地⽅の制度")
+for nid in ("5", "9"):
+    note._p.append(parse_xml(f'<w:r xmlns:w="{W_NS}"><w:footnoteReference w:id="{nid}"/></w:r>'))
+sd.save(out / "shapes.docx")
+import zipfile
+with zipfile.ZipFile(out / "shapes.docx", "a") as z:
+    z.writestr("word/footnotes.xml",
+               f'<w:footnotes xmlns:w="{W_NS}">'
+               '<w:footnote w:id="5"><w:p><w:r><w:t>最初の注</w:t></w:r></w:p></w:footnote>'
+               '<w:footnote w:id="9"><w:p><w:r><w:t>二番目の注</w:t></w:r></w:p></w:footnote></w:footnotes>')
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)
