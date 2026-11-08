@@ -90,6 +90,26 @@ def main() -> int:
         o = run(READ, d / "merged.docx")
         check("docx header cell spanning two columns names both; groups spanning rows repeat",
               "| 区分 | 項目 | 項目 | 備考 |" in o and "| 基本 | 受注日 | 8 | 任意 |" in o, o)
+        code = "\n".join([
+            "import md_crosscheck as m",
+            "same = lambda a, b: set(m.sentences(a)) == set(m.sentences(b)) != set()",
+            "assert same('RFI【あ】......情報提供依頼書のこと。', 'RFI【あ】……情報提供依頼書のこと。')",
+            "assert m.sentences('[はじめに [1](#section)](#section)') == {}",
+            "assert m.sentences('[第１章 概要 2](#_Toc11)') == {}",
+            "assert '３類型に分類する' in m.sentences('1. ３類型に分類する。') or any('３類型' in s for s in m.sentences('1. ３類型に分類する。'))",
+            "assert same('| 全ての団体で、<br>必須機能である |', '全ての団体で、必須機能である')",
+            "assert same('[RFI【あ】]{.underline}の説明文です。', 'RFI【あ】の説明文です。')",
+            "assert m.tables('|  |  |\\n| --- | --- |\\n| a | b |\\n| c | d |\\n') == [2]",
+            "assert m.headings('# 目次 {#目次 .TOC-Heading}\\n#\\n## はじめに\\n') == ['はじめに']",
+            "assert same('前の{--古い--}{++新しい++}文です。{>>a: x<<}', '前の新しい文です。')",
+            "assert m.tables('| 区分 | a |\\n|---|---|\\n| 区分 | |\\n| 区分 | b |\\n') == [2]",
+            "assert m.sentences('&#10;</blockquote></td>') == {}",
+            "assert same('[figure: x.png 2x2]様式第三号の説明文', '様式第三号の説明文')",
+            "print('NORMALISATION OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("cross-check normalisation: leaders, TOC links, full-width digits, cell breaks, spans, rows, marks",
+              "NORMALISATION OK" in o.stdout, o.stdout + o.stderr)
         o = run(rv, d / "review.xlsx")
         check("office_review xlsx threaded + legacy", "| メイン!B2 | reviewer |" in o and "reply to reviewer" in o and "| メイン!C2 | taro |" in o, o)
         o = run(rv, d / "review.pptx")
@@ -389,6 +409,22 @@ def main() -> int:
                            cwd=ROOT / "office-read" / "scripts")
         check("pdf --columns: narrow cells printed a few characters a line are joined per column",
               "COLUMNS OK" in o.stdout, o.stdout + o.stderr)
+        code = "\n".join([
+            "import md_crosscheck as m",
+            "same = lambda a, b: set(m.sentences(a)) == set(m.sentences(b)) != set()",
+            "assert same('SNS等を通じた｜誹謗《ひぼう》中傷の対策。', 'SNS等を通じた中傷の対策。')",
+            "assert same('| 運営する[^97]という役割。 |', '運営するという役割。')",
+            "assert same('平成14年法律第151号 [↑](#footnote-ref-11)', '平成14年法律第151号')",
+            "assert same('推進すること（“DX with Cybersecurity”）が重要。', '推進すること（\"DX with Cybersecurity\"）が重要。')",
+            "from pathlib import Path",
+            "m.SUBSTRING_BUDGET = 0",
+            "text, _ = m.review('# a\\n\\n一つめの文です。\\n', {'pandoc': '一つめの文です。別の長い文がここに。\\n'}, Path('a.docx'))",
+            "assert 'were not searched as part of a longer sentence' in text, text",
+            "print('REFS OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("cross-check normalisation: furigana, notes in table cells, back links, curly quotes",
+              "REFS OK" in o.stdout, o.stdout + o.stderr)
         code = "\n".join([
             "import office2md as m",
             "wrapped = 'あ' * 30 + '\\n' + 'い' * 30 + '\\n' + 'うえお。' + '\\n' + '短い行' + '\\n' + 'か' * 30 + '\\n' + '・項目'",

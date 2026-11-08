@@ -19,7 +19,6 @@ Markdown is still produced.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import shutil
 import subprocess
@@ -31,13 +30,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 import office2md  # noqa: E402
 import diagram_lint  # noqa: E402
 import review_checks as rc  # noqa: E402
+import office_com  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # Windows console defaults to cp932
 except AttributeError:
     pass
 
-NUM_PREFIX = re.compile(r"^(第\s*[0-9０-９一二三四五六七八九十]+\s*[章節項部編]|\d+(\.\d+)*\.?|\(\d+\)|[①-⑳]|[a-zA-Z][.)])\s*")
+# a number is a label only when a dot or a space follows it: "３類型に…" and "10件まで" keep their digits
+NUM_PREFIX = re.compile(r"^(第\s*[0-9０-９一二三四五六七八九十]+\s*[章節項部編]|[0-9０-９]+([.．][0-9０-９]+)*([.．]|(?=\s))"
+                        r"|[(（][0-9０-９]+[)）]|[①-⑳]|[a-zA-Z][.)](?=\s))\s*")
 
 
 # -- running the engines ------------------------------------------------------------------
@@ -90,6 +92,31 @@ def run_markitdown(src: Path, out_md: Path) -> str | None:
 
 # -- normalising for comparison -----------------------------------------------------------
 
+# a line that is only an internal link whose text ends in a page number: a TOC entry as pandoc
+# ("[はじめに [1](#section)](#section)") or markitdown ("[はじめに 1](#_Toc119672580)") write it
+TOC_LINE = re.compile(r"^[-*]?\s*\[[^\n]{0,300}?\s\[?[0-9]+\]?(\(#[^)]{0,300}\))?\]\(#[^)]{0,300}\)\s*$")
+# characters scanned by the substring fallback per reference (a 118-page plan needs about 1e8)
+SUBSTRING_BUDGET = 2_000_000_000
+# Every pattern below runs on document text, so every repeat is bounded: a crafted line must not
+# make the review take time growing with the square of its length.
+
+
+def _strip_between(text: str, start: str, end: str) -> str:
+    """text without each start…end span, scanned once (a lazy regex would rescan a long line)."""
+    out, i = [], 0
+    while True:
+        a = text.find(start, i)
+        if a < 0:
+            break
+        b = text.find(end, a + len(start))
+        if b < 0:
+            break
+        out.append(text[i:a])
+        i = b + len(end)
+    out.append(text[i:])
+    return "".join(out)
+
+
 def sentence_entries(md: str) -> list[tuple[str, str, str]]:
     """(normalised sentence, original line, section) for every sentence, in order. Markdown
     syntax, numbering and whitespace are removed so that the same content written two ways
@@ -98,14 +125,33 @@ def sentence_entries(md: str) -> list[tuple[str, str, str]]:
     section = ""
     for raw in md.splitlines():
         line = raw.strip()
-        if not line or line.startswith(("|---", "```", "_Content extracted", "_Source:", "_(table of contents", "[figure:", ":::")):
+        if not line or line.startswith(("|---", "```", "_Content extracted", "_Source:", "_(table of contents", ":::")):
             continue
+        if len(line) <= 1000 and TOC_LINE.match(line):
+            continue                                                 # a table-of-contents entry: [見出し 12](#anchor)
+        line = _strip_between(line, "{--", "--}")                    # tracked deletions are not current text
+        line = _strip_between(line, "{>>", "<<}")                    # inline comments
+        line = line.replace("{++", "").replace("++}", "")
+        # a word with furigana, ｜誹謗《ひぼう》: pandoc and markitdown drop the whole word, so it is left
+        # out of the comparison (the primary keeps it; it is not a loss in the primary)
+        line = re.sub(r"｜[^《｜]{0,20}《[^》]{0,40}》", "", line)
+        # pandoc's HTML footnotes inside tables: the note number link and the back link
+        # bounded and kept inside one tag: an unbounded .*? here could backtrack badly on a crafted line
+        line = re.sub(r'<a [^<>]{0,300}class="footnote-(?:ref|back)"[^<>]{0,300}>'
+                      r'(?:[^<]|<sup>[^<]{0,20}</sup>){0,200}</a>', "", line)
+        line = re.sub(r"\[\^[^\]\n]{1,40}\]", "", line)              # footnote marks, in table cells too
+        line = re.sub(r"\[[↑↩︎]{1,4}\]\(#[^)]{0,200}\)", "", line)   # markitdown's footnote back links
         line = re.sub(r"^>\s*\*\*Text box:\*\*\s*", "", line)      # text box content is content
-        line = re.sub(r"\[\[\d+\]\]\(#[^)]*\)", "", line)           # markitdown footnote marks
+        line = re.sub(r"\[\[\d{1,6}\]\]\(#[^)]{0,200}\)", "", line)  # markitdown footnote marks
         line = re.sub(r"\$\$?[^$]{1,400}\$\$?", "", line)           # equations are compared separately
-        line = re.sub(r"\s*\{[^}]*\}\s*$", "", line)                 # pandoc heading attributes {.title}
+        line = re.sub(r"\[figure:[^\]]{0,500}\]", "", line)          # office2md figure markers after a caption
+        line = re.sub(r"\[([^\]]{0,500})\]\{[^}]{0,200}\}", r"\1", line)  # pandoc spans [text]{.underline}
+        line = re.sub(r"\{(?:width|height|#|\.)[^}]{0,200}\}?", "", line)  # pandoc attributes, also cut at line end
+        line = re.sub(r"\s{0,20}\{[^}]{0,200}\}\s{0,20}$", "", line)  # pandoc heading attributes {.title}
+        line = re.sub(r"<br\s{0,5}/?>", " ", line)
+        line = re.sub(r"&#?[0-9A-Za-z]{1,8};", " ", line)          # HTML character references (&#10;)
         if line.startswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
+            cells = [re.sub(r"<[^<>]{1,500}>", " ", c).strip() for c in line.strip("|").split("|")]
             for c in cells:
                 for s in split_sentences(c):
                     out.append((s, raw, section))
@@ -113,11 +159,10 @@ def sentence_entries(md: str) -> list[tuple[str, str, str]]:
         if re.match(r"^#{1,6}\s", line):
             section = "".join(split_sentences(re.sub(r"^#{1,6}\s*", "", line))) or section
         line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^(\s*[-*+]\s+|\s*\d+\.\s+|>\s*)+", "", line)
-        line = re.sub(r"\[\^[^\]]+\]", "", line)
-        line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)
-        line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)
-        line = re.sub(r"<[^>]+>", "", line)
+        line = re.sub(r"^(\s{0,8}[-*+]\s{1,8}|\s{0,8}\d{1,9}\.\s{1,8}|>\s{0,8}){1,10}", "", line)
+        line = re.sub(r"!\[[^\]]{0,500}\]\([^)]{0,500}\)", "", line)
+        line = re.sub(r"\[([^\]]{0,500})\]\([^)]{0,500}\)", r"\1", line)
+        line = re.sub(r"<[^<>]{1,500}>", "", line)
         for s in split_sentences(line):
             out.append((s, raw, section))
     return out
@@ -133,6 +178,9 @@ def sentences(md: str) -> dict[str, str]:
 
 def split_sentences(text: str) -> list[str]:
     text = text.replace("~~", "").replace("**", "").replace("__", "").replace("*", "").replace("`", "").replace("\\", "")
+    # leaders: Word's "……" comes out of pandoc as "......", which would also split the sentence
+    text = re.sub(r"[…‥]+|\.{2,}", "", text)
+    text = re.sub(r"[“”\"‘’']", "", text)          # pandoc turns curly quotes into straight ones
     pieces = re.split(r"(?<=[。．.!?！？])\s*", text)
     out = []
     for p in pieces:
@@ -166,21 +214,38 @@ def code_span(s: str) -> str:
 
 
 def tables(md: str) -> list[int]:
-    """Cell count per table, in order."""
-    counts, cur, in_table = [], 0, False
+    """Rows with content per pipe table, in order. Rows, not cells: converters write merged cells
+    differently (repeated, blank or dropped), but a row lost or split is a real difference; an
+    all-blank row is the placeholder header markitdown adds and is not counted, and so is a row
+    whose only content repeats the cell above (a label merged down a blank form section)."""
+    counts, cur, in_table, prev = [], 0, False, []
     for line in md.splitlines() + [""]:
-        if line.strip().startswith("|"):
+        s = line.strip()
+        if s.startswith("|"):
             in_table = True
-            if not re.match(r"^\|?\s*:?-{2,}", line.strip()):
-                cur += line.count("|") - 1
+            if re.match(r"^\|?\s*:?-{2,}", s):
+                continue
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            new = [c for i, c in enumerate(cells) if c and (i >= len(prev) or c != prev[i])]
+            if new:
+                cur += 1
+            prev = cells
         elif in_table:
             counts.append(cur)
-            cur, in_table = 0, False
+            cur, in_table, prev = 0, False, []
     return counts
 
 
+def html_tables(md: str) -> int:
+    return len(re.findall(r"<table[\s>]", md))
+
+
 def headings(md: str) -> list[str]:
-    return [re.sub(r"\s+", " ", h.strip()) for h in re.findall(r"^#{1,6}\s+(.+)$", md, re.M)]
+    # [ \t]+, not \s+: an empty heading line ("#") must not swallow the line after it
+    # a heading pandoc marks .TOC-Heading belongs to the table of contents the primary collapses
+    found = [re.sub(r"\s{0,20}\{[^{}]{0,200}\}\s{0,20}$", "", h[:1000])
+             for h in re.findall(r"^#{1,6}[ \t]+(.+)$", md, re.M) if ".TOC-Heading" not in h]
+    return [re.sub(r"\s+", " ", h.strip()) for h in found if h.strip()]
 
 
 def esc(s: str) -> str:
@@ -261,22 +326,45 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
     out.append("")
     n_items = 0
     counts = {"missing": 0, "links": 0, "equations": 0, "bold": 0, "tables": 0, "headings": 0, "fewer": 0, "moved": 0}
-    own = {f"# {src.name}", "## Notes", "## Comments"}        # lines office2md adds itself
+    own = {f"# {src.name}", "## Notes", "## Comments", "## Tracked changes"}        # lines office2md adds itself
     # drop those lines before sentence extraction: "# 仕様書.docx" would otherwise yield the sentence
     # "仕様書" and shadow the document's real title heading
     p_text = "\n".join(l for l in primary.splitlines() if l.strip() not in own)
     p_sent = sentences(p_text)
     p_entries = sentence_entries(p_text)
+    p_blob = "\n".join(s for s, _, _ in p_entries)
+    # the same sentences run together: a reference sentence the primary splits over two lines
+    # (a text box, a wrapped cell) is found across the join
+    p_flat = "".join(s for s, _, _ in p_entries)
     p_count = Counter(s for s, _, _ in p_entries)
     p_section = {s: sec for s, _, sec in p_entries}
-    p_links, p_emph, p_eq, p_tables = links(primary), emphasis(primary), equations(primary), tables(primary)
+    # the change list and comment table office2md appends are not tables of the document
+    body = re.split(r"(?m)^## (?:Tracked changes|Comments)$", primary, maxsplit=1)[0]
+    p_links, p_emph, p_eq, p_tables = links(primary), emphasis(primary), equations(primary), tables(body)
     p_heads = [h for h in headings(primary) if h not in (src.name, "Notes", "Comments")]
 
     for name, text in refs.items():
         r_sent = sentences(text)
-        missing = [r_sent[s] for s in r_sent if s not in p_sent]
+        # found when equal to a primary sentence or part of one: a table cell pandoc writes as
+        # several <p> lines is one cell, joined, in the primary
+        missing, unchecked = [], 0
+        budget = SUBSTRING_BUDGET
+        for s in r_sent:
+            if s in p_sent:
+                continue
+            # the substring search scans the whole primary per sentence: bounded, so a huge or
+            # crafted document cannot make the review run for hours; what is left is reported
+            if budget <= 0:
+                unchecked += 1
+                missing.append(r_sent[s])
+                continue
+            budget -= len(p_blob) + len(p_flat)
+            if s not in p_blob and s not in p_flat:
+                missing.append(r_sent[s])
+        if unchecked:
+            counts["unchecked"] = counts.get("unchecked", 0) + unchecked
         # ignore reference lines that are just the TOC the primary collapsed on purpose
-        missing = [m for m in missing if not re.search(r"\.{3,}\s*\d+\s*$|…+\s*\d+\s*$", m)]
+        missing = [m for m in missing if not re.search(r"(?:\.{3,40}|…{1,40})\s{0,5}\d{1,5}\s{0,5}$", m[-200:])]
         out.append(f"## Content in {name} not found in the primary ({len(missing)})")
         out.append("")
         if missing:
@@ -372,12 +460,15 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
             counts["bold"] += len(uniq)
 
         r_tables = tables(text)
-        if r_tables != p_tables:
+        if html_tables(text) and len(r_tables) + html_tables(text) == len(p_tables):
+            # the reference wrote tables with merged cells as HTML: rows of those cannot be compared
+            counts["tables_skipped"] = counts.get("tables_skipped", 0) + html_tables(text)
+        elif r_tables != p_tables:
             out.append(f"## Table shapes differ from {name}")
             out.append("")
-            out.append(f"Primary: {len(p_tables)} table(s) with cell counts {p_tables[:30]}; {name}: "
-                       f"{len(r_tables)} with {r_tables[:30]}. A larger count in the reference usually means "
-                       "merged cells it expanded or a nested table it flattened; check those tables by eye.")
+            out.append(f"Primary: {len(p_tables)} table(s) with row counts {p_tables[:30]}; {name}: "
+                       f"{len(r_tables)} with {r_tables[:30]}. A different count means a row lost, split or "
+                       "merged, or a nested table flattened; check those tables by eye.")
             out.append("")
             n_items += 1
             counts["tables"] += 1
@@ -431,8 +522,13 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
                             "differs": "Source: the Markdown was made from another version of the document."}[src_state]),
                status_line(content_ok, f"Content against {', '.join(refs)}: {counts['missing']} sentence(s) only in a "
                            f"reference, {counts['fewer']} repeated fewer times, {counts['links']} link(s), "
-                           f"{counts['headings']} heading difference(s)."),
-               status_line(counts["tables"] == 0, f"Table shapes: {counts['tables']} difference(s) in cell counts."),
+                           f"{counts['headings']} heading difference(s)"
+                           + (f"; {counts['unchecked']} of those sentences were not searched as part of a longer "
+                              "sentence because the document is very large, so some may be present"
+                              if counts.get("unchecked") else "") + "."),
+               status_line(counts["tables"] == 0, f"Table shapes: {counts['tables']} difference(s) in row counts"
+                           + (f"; {counts['tables_skipped']} table(s) a reference wrote as HTML were not compared"
+                              if counts.get("tables_skipped") else "") + "."),
                status_line(vis_done == vis_total, f"Visual checks: {vis_done} of {vis_total} confirmed"
                            + (f", {vis_stale} recorded for content that has since changed" if vis_stale else "")
                            + (f" (page render: {checks['page_pdf']})" if checks.get("page_pdf") else "") + "."),
@@ -461,35 +557,9 @@ XLSX_OPTS = dict(outline=False, profile=False, sheet=None, slide=None, max_rows=
                  extract_attachments=None, mail_engine="auto", password=None)
 
 
-OFFICE_LIMIT_S = 240
-
-
-def run_office_script(script: str, image: str, env: dict[str, str], limit: int = OFFICE_LIMIT_S) -> str:
-    """Run a PowerShell script that drives Excel or Word through COM, in a job with a time limit.
-    A hidden dialog (repair, password, conversion) makes the Office process wait forever; on the
-    limit the job is stopped and the Office processes started since this call are ended, so none
-    is left running invisibly. The script travels in an environment variable, never in the
-    command line, and the file paths in OFFICE_SRC / OFFICE_OUT the same way."""
-    wrapper = f"""
-$t0 = Get-Date
-$job = Start-Job -ScriptBlock ([scriptblock]::Create($env:OFFICE_SCRIPT))
-if (Wait-Job $job -Timeout {int(limit)}) {{ Receive-Job $job 2>$null }}
-else {{
-  Stop-Job $job
-  # only hidden instances started by this call: a window the user opened meanwhile is left alone
-  Get-Process {image} -ErrorAction SilentlyContinue |
-    Where-Object {{ $_.StartTime -ge $t0 -and $_.MainWindowHandle -eq 0 }} | Stop-Process -Force
-  Write-Output 'TIMEOUT'
-}}
-Remove-Job $job -Force
-"""
-    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", wrapper],
-                       capture_output=True, text=True, timeout=limit + 60,
-                       env={**os.environ, **env, "OFFICE_SCRIPT": script})
-    if "TIMEOUT" in r.stdout:
-        print(f"[md_crosscheck] {image.title()} did not answer within {limit} s (a hidden dialog?); stopped it",
-              file=sys.stderr)
-    return r.stdout
+def run_office_script(script: str, image: str, env: dict[str, str]) -> str:
+    """Office through COM with a time limit; see office_com.run_script."""
+    return office_com.run_script(script, image, env)
 
 
 def render_sheets(src: Path, out: Path, sheet_names: list[str]) -> tuple[dict[str, str], str]:
