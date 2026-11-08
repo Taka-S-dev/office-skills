@@ -6,13 +6,14 @@ SKILL.md 形式を読むエージェントならどれでも使え、スクリ�
 
 ```
 officeskill/
-├── office-read/        読む。xlsx docx pptx pdf csv eml msg zip 7z mpp → Markdown / JSON
+├── office-read/        読む。xlsx docx pptx pdf csv eml msg zip 7z mpp vsdx（と旧形式 xls doc ppt）→ Markdown / JSON
 │   ├── SKILL.md        エージェント向けの手順（英語）
 │   ├── scripts/        office2md（読む）/ xlsx_deps（数式の依存）/ office_diff（2 版の差分）
 │   │                   / xlsx_check（ルール検査）/ office_review（変更履歴とコメント）/ office_find（横断検索）
 │   │                   / mail_digest（フォルダ内メールの時系列）/ unpack（zip・7z の展開）
 │   │                   / md_crosscheck（Word・Excel → md の照合と目視確認）/ diagram_lint（mermaid・PlantUML の構文検査）
 │   │                   （検査の部品は review_checks、図形の読み取りは xlsx_drawing）
+│   │                   / visio_reader（Visio の業務フロー）/ office_com（Office を COM で安全に動かす）
 │   │                   / mpp_reader（MS Project の計画。単体でも動く）/ mpp_history（2 版の差分、1 年分の推移）
 │   └── profiles/       組織固有の定型ファイルの知識を置く場所（配布時は空）
 ├── office-edit/        書く。置換、セル更新、再計算、PDF の結合・分割・しおり
@@ -59,6 +60,8 @@ MS Project の .mpp を読むには、次のどちらかが要る（無くても
 ```bash
 python office-read/scripts/office2md.py 仕様書.docx --out 仕様書.md --images ./fig   # 番号付き見出し・脚注・図を保った md
 python office-read/scripts/md_crosscheck.py 仕様書.docx --out-dir ./md             # pandoc 等と突き合わせ、差分を review.md に
+python office-read/scripts/office2md.py 業務フロー.vsdx                         # レーンごとの流れを mermaid と一覧で
+python office-read/scripts/office2md.py 統計.pdf --layout                       # 表の多い PDF は列をそろえて
 python office-read/scripts/office2md.py 計画.mpp --gantt                          # 遅れ・予定進捗との差・計画の品質・終了日を決める連なり・gantt 図
 python office-read/scripts/mpp_history.py 旧.mpp 新.mpp                         # 追加・削除・日付のずれ・進捗の差分
 python office-read/scripts/mpp_history.py ./計画の履歴 --cache ./mpp_cache          # 1 年分: 悪化した時期、後から増えたタスク、マイルストーンの推移

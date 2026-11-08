@@ -100,6 +100,15 @@ def units(path: Path) -> list[tuple[str, str]]:
             for line in p["text"].splitlines():
                 if line.strip():
                     out.append((f"Page {p['n']}", line))
+    elif d["type"] == "vsdx":
+        for pg in d["pages"]:
+            for n in pg.get("nodes", []):
+                out.append((f"page {pg['name']} {n['lane']}".strip(), n["label"]))
+            for e in pg.get("edges", []):
+                if e["label"]:
+                    out.append((f"page {pg['name']} flow", e["label"]))
+            for x in pg.get("notes", []) + pg.get("other", []):
+                out.append((f"page {pg['name']}", x["text"]))
     elif d["type"] == "mpp":
         for t in d["tasks"]:
             where = f"task {t['id']} ({t['outline']})"

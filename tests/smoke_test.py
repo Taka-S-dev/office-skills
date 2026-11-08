@@ -365,6 +365,43 @@ def main() -> int:
         o = run(READ, d / "objects.pptx", "--images", d / "pimg")
         check("pptx SmartArt text and picture alt text, picture extracted",
               "> - 審査\n>   - 書類確認" in o and "— 承認フローの図" in o and any((d / "pimg").glob("figure-*.png")), o)
+        o = run(READ, d / "flow.vsdx")
+        check("vsdx: lanes, glued flow in order, loose dashed message by position carrying data, decision label, annotation",
+              all(x in o for x in ["Lanes: 窓口 · 審査課", "- [窓口] (start) → [窓口] 申請受付",
+                                   "- [窓口] 申請受付 → [審査課] 内容審査 carrying 申請書 (message) (end found by position",
+                                   "[受理の場合] (label: nearest text)", "- 申請受付: 書類の不備は電話で確認する",
+                                   'subgraph L2["審査課"]', '-->|"受理の場合"|']), o)
+        o = run(READ, d / "nested.docx")
+        check("docx: a table nested in a cell is read, one line per row",
+              "氏名 \\| 山田<br>対象者との続柄 \\| 本人" in o, o)
+        code = "\n".join([
+            "import office2md as m",
+            "wrapped = 'あ' * 30 + '\\n' + 'い' * 30 + '\\n' + 'うえお。' + '\\n' + '短い行' + '\\n' + 'か' * 30 + '\\n' + '・項目'",
+            "out = m.reflow(wrapped)",
+            "assert out.splitlines()[0] == 'あ' * 30 + 'い' * 30 + 'うえお。', out",
+            "assert '短い行' in out.splitlines() and '・項目' in out.splitlines(), out",
+            "assert m.tabular('\\n'.join('行 %d 120 3,400 5.5 ▲7' % i for i in range(6)))",
+            "assert not m.tabular('本文です。\\n' * 6)",
+            "print('PDF OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("pdf: wrapped lines joined into their paragraph, short lines and list items kept, tables detected",
+              "PDF OK" in o.stdout, o.stdout + o.stderr)
+        if sys.platform == "win32" and shutil.which("powershell"):
+            sys.path.insert(0, str(ROOT / "office-read" / "scripts"))
+            import office_com
+            legacy = d / "legacy.doc"
+            office_com.run_script(
+                "$a = New-Object -ComObject Word.Application; try { $a.DisplayAlerts = 0; "
+                "$x = $a.Documents.Open($env:OFFICE_SRC, $false, $true); $x.SaveAs2($env:OFFICE_OUT, 0); $x.Close(0) } "
+                "finally { $a.Quit(); [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($a) }",
+                "WINWORD", {"OFFICE_SRC": str(d / "sample.docx"), "OFFICE_OUT": str(legacy)}, limit=120)
+            if legacy.exists():
+                o = run(READ, legacy)
+                check("legacy .doc is converted by Word and read", "is the old .doc format; converted to .docx by "
+                      "Microsoft Office" in o and "箇条書き その1" in o, o)
+            else:
+                print("  [skip] legacy .doc (Word not available)")
         o = run(READ, csv)
         check("csv cp932 decoded", "太郎" in o, o)
         o = run(READ, xlsx, "--json")

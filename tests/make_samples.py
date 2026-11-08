@@ -695,6 +695,74 @@ def _hist(status, design_name, p3, p5, f5, f6, p6, milestone, extra=False):
     _hist(None, "基本設計（改）", 100, 60, "2026-11-05", "2026-11-20", 10, "2026-11-30", extra=True), encoding="utf-8")
 
 
+# --- flow.vsdx: a Visio business flow with two lanes -------------------------------------------
+# glued sequence flows, a dashed message line whose ends are only near its shapes, a decision
+# label written as a separate text box, a data object riding on the message, an annotation.
+VNS = "http://schemas.microsoft.com/office/visio/2012/main"
+RNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _vcells(**kv):
+    return "".join(f'<Cell N="{k}" V="{v}"/>' for k, v in kv.items())
+
+
+def _vshape(sid, text="", master=None, **cells):
+    m = f' Master="{master}"' if master else ""
+    t = f"<Text>{text}</Text>" if text else ""
+    return f'<Shape ID="{sid}" Type="Shape"{m}>{_vcells(**cells)}{t}</Shape>'
+
+
+def _vline(sid, master, x1, y1, x2, y2, text="", dashed=False):
+    extra = {"LinePattern": 2} if dashed else {}
+    return _vshape(sid, text, master, BeginX=x1, BeginY=y1, EndX=x2, EndY=y2, PinX=(x1 + x2) / 2,
+                   PinY=(y1 + y2) / 2, Width=abs(x2 - x1) or 0.1, Height=abs(y2 - y1) or 0.1, **extra)
+
+
+page = "".join([
+    _vshape(1, "窓口", 1, PinX=2, PinY=4, Width=3, Height=8),            # lane: left column
+    _vshape(2, "審査課", 1, PinX=6, PinY=4, Width=3, Height=8),          # lane: right column
+    _vshape(10, "", 2, PinX=2, PinY=7, Width=0.5, Height=0.5),            # start event
+    _vshape(11, "申請受付", 3, PinX=2, PinY=5.5, Width=1.5, Height=0.8),
+    _vshape(12, "", 4, PinX=2, PinY=3.5, Width=0.8, Height=0.8),         # gateway
+    _vshape(13, "受理通知", 3, PinX=2, PinY=1.5, Width=1.5, Height=0.8),
+    _vshape(14, "内容審査", 3, PinX=6, PinY=3.5, Width=1.5, Height=0.8),
+    _vshape(15, "申請書", 6, PinX=4, PinY=6.2, Width=0.5, Height=0.6),   # data object
+    _vshape(16, "受理の場合", None, PinX=2.4, PinY=2.6, Width=0.9, Height=0.3),
+    _vshape(17, "書類の不備は電話で確認する", None, PinX=0.6, PinY=5.5, Width=1.0, Height=0.5),
+    _vline(20, 5, 2, 6.75, 2, 5.9),                        # start -> 申請受付 (glued)
+    _vline(21, 5, 2, 5.1, 2, 3.9),                         # 申請受付 -> gateway (glued)
+    _vline(22, 5, 2, 3.1, 2, 1.9),                         # gateway -> 受理通知 (glued, label nearby)
+    _vline(23, 7, 2.8, 5.4, 5.2, 3.6, dashed=True),        # 申請受付 -> 内容審査, not glued
+    _vline(24, 8, 4, 5.9, 4, 4.5, dashed=True),            # 申請書 rides on line 23
+    _vline(25, 8, 1.12, 5.5, 1.25, 5.5, dashed=True),      # annotation -> 申請受付, not glued
+])
+connects = "".join(f'<Connect FromSheet="{a}" FromCell="{c}" ToSheet="{b}"/>' for a, c, b in [
+    (20, "BeginX", 10), (20, "EndX", 11), (21, "BeginX", 11), (21, "EndX", 12), (22, "BeginX", 12),
+    (22, "EndX", 13), (24, "BeginX", 15), (24, "EndX", 23)])
+masters = "".join(f'<Master ID="{i}" NameU="{n}"/>' for i, n in [
+    (1, "Pool / Lane"), (2, "Start Event"), (3, "Task"), (4, "Gateway"), (5, "Sequence Flow"),
+    (6, "Data Object"), (7, "Message Flow"), (8, "Association")])
+with zipfile.ZipFile(out / "flow.vsdx", "w", zipfile.ZIP_DEFLATED) as vz:
+    vz.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types '
+                'xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+    vz.writestr("visio/masters/masters.xml", f'<Masters xmlns="{VNS}">{masters}</Masters>')
+    vz.writestr("visio/pages/pages.xml", f'<Pages xmlns="{VNS}" xmlns:r="{RNS}"><Page ID="0" NameU="申請"><Rel '
+                'r:id="rId1"/></Page></Pages>')
+    vz.writestr("visio/pages/_rels/pages.xml.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/'
+                'package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.microsoft.com/visio/'
+                '2010/relationships/page" Target="page1.xml"/></Relationships>')
+    vz.writestr("visio/pages/page1.xml", f'<PageContents xmlns="{VNS}"><Shapes>{page}</Shapes>'
+                f"<Connects>{connects}</Connects></PageContents>")
+
+# --- nested.docx: a table inside a table cell --------------------------------------------------
+nd = docx.Document()
+outer = nd.add_table(rows=1, cols=2)
+outer.cell(0, 0).text = "申請者"
+inner = outer.cell(0, 1).add_table(rows=2, cols=2)
+inner.cell(0, 0).text = "氏名"; inner.cell(0, 1).text = "山田"
+inner.cell(1, 0).text = "対象者との続柄"; inner.cell(1, 1).text = "本人"
+nd.save(out / "nested.docx")
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

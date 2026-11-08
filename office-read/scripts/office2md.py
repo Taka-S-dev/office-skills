@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -1697,7 +1698,31 @@ class DocxHandler(Handler):
                         yield from walk(content)
         yield from walk(doc.element.body)
 
-    def _table_rows(self, table) -> list[list[str]]:
+    def _cell_lines(self, cell, depth: int = 0) -> list[str]:
+        """A cell's paragraphs and the tables nested in it, in document order. A nested table
+        comes out as one line per row, cells joined by " | ", so a block of fields a form keeps in
+        one cell is not lost."""
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+        W = lambda n: self._q("w", n)  # noqa: E731
+        lines: list[str] = []
+        for child in cell._tc.iterchildren():
+            if child.tag == W("p"):
+                p = Paragraph(child, cell)
+                text, boxes = self._para(p)
+                label, bullet = self._label(self._num_pr(p))
+                text = text.strip()
+                if text:
+                    lines.append((("• " if bullet else (label + " ") if label else "") + text))
+                lines += boxes
+            elif child.tag == W("tbl") and depth < 3:
+                for row in self._table_rows(Table(child, cell), depth + 1):
+                    joined = " | ".join(c.replace("\n", " / ") for c in row if c.strip())
+                    if joined:
+                        lines.append(joined)
+        return lines
+
+    def _table_rows(self, table, depth: int = 0) -> list[list[str]]:
         rows = []
         for row in table.rows:
             cells = []
@@ -1708,15 +1733,7 @@ class DocxHandler(Handler):
                     # over "名称 | 桁数"); in a body row the repeat would only duplicate text
                     cells.append(cells[-1] if cells and (not rows or self._header_row(row)) else "")
                 else:
-                    lines = []
-                    for p in cell.paragraphs:
-                        text, boxes = self._para(p)
-                        label, bullet = self._label(self._num_pr(p))
-                        text = text.strip()
-                        if text:
-                            lines.append((("• " if bullet else (label + " ") if label else "") + text))
-                        lines += boxes
-                    cells.append("\n".join(lines))
+                    cells.append("\n".join(self._cell_lines(cell, depth)))
                 prev = cell._tc
             rows.append(cells)
         return rows
@@ -2082,6 +2099,45 @@ class PptxHandler(Handler):
 # pdf (text layer only; scanned PDFs need OCR, out of scope here)
 # ----------------------------------------------------------------------------
 
+def _width(line: str) -> int:
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in line)
+
+
+_ENDS = tuple("。．.!?！？:：」』）)")
+_STARTS = re.compile(r"^\s*([・●○■□◆◇※\-*•]|[0-9０-９]+[.．)）]|[（(][0-9０-９]+[)）]|[①-⑳]|第.{1,4}[章節条項])")
+
+
+def reflow(text: str) -> str:
+    """Join lines a PDF wrapped at the right margin back into their paragraph. A line counts as
+    wrapped when it reaches near the page's longest line and does not end a sentence; the next line
+    must not start a list item or a heading. Short lines (table rows, labels) stay as they are."""
+    lines = text.splitlines()
+    widths = [_width(x.rstrip()) for x in lines if x.strip()]
+    if len(widths) < 3:
+        return text
+    full = sorted(widths)[int(len(widths) * 0.9)]           # the usual full line, not one outlier
+    out: list[str] = []
+    for line in lines:
+        cur = line.rstrip()
+        if out and out[-1] and cur.strip():
+            prev = out[-1]
+            last_line_width = _width(prev.split("\n")[-1]) if "\n" in prev else _width(prev)
+            if (last_line_width >= 0.85 * full and not prev.endswith(_ENDS) and not _STARTS.match(cur)
+                    and full >= 20):
+                ascii_join = prev[-1:].isascii() and cur.lstrip()[:1].isascii()
+                out[-1] = prev + (" " if ascii_join else "") + cur.strip()
+                continue
+        out.append(cur)
+    return "\n".join(out)
+
+
+def tabular(text: str) -> bool:
+    """A page with many lines of several numbers: a table whose columns plain text loses."""
+    rows = [x for x in text.splitlines() if len(re.findall(r"(?<![0-9.,])[-▲△]?[0-9][0-9,.]*%?(?![0-9])", x)) >= 4]
+    return len(rows) >= 5
+
+
 class PdfHandler(Handler):
     name = "pdf"
 
@@ -2113,8 +2169,14 @@ class PdfHandler(Handler):
         for i, p in enumerate(r.pages, start=1):
             if self.opts.slide and i != self.opts.slide:
                 continue
-            pages.append({"n": i, "text": (p.extract_text() or "").strip()})
-        return {"file": str(self.path), "type": "pdf", "pages": pages}
+            if getattr(self.opts, "layout", False):
+                text = (p.extract_text(extraction_mode="layout") or "").rstrip()
+                text = "\n".join(line.rstrip() for line in text.splitlines()).strip("\n")
+            else:
+                text = reflow((p.extract_text() or "").strip())
+            pages.append({"n": i, "text": text, "tabular": tabular(text)})
+        return {"file": str(self.path), "type": "pdf", "pages": pages,
+                "layout": bool(getattr(self.opts, "layout", False))}
 
     def to_markdown(self, data: dict) -> str:
         out = md_title(data["file"])
@@ -2124,9 +2186,17 @@ class PdfHandler(Handler):
                 out.append("  " * b["level"] + "- " + b["title"])
             return "\n".join(out)
         empty = 0
+        tables = [p["n"] for p in data["pages"] if p.get("tabular")]
+        if tables and not data.get("layout"):
+            shown = ", ".join(map(str, tables[:20])) + (" …" if len(tables) > 20 else "")
+            out.append(f"> Page(s) {shown} look like tables: their columns are not kept here. Rerun with --layout "
+                       "(and --slide N for one page) to read them with the columns aligned.\n")
         for p in data["pages"]:
             out.append(f"## Page {p['n']}")
-            if p["text"]:
+            if p["text"] and data.get("layout"):
+                fence = "`" * max(3, max((len(m) for m in re.findall(r"`+", p["text"])), default=0) + 1)
+                out += [fence + "text", p["text"], fence]
+            elif p["text"]:
                 out.append(md_para(p["text"]))
             else:
                 empty += 1
@@ -2466,6 +2536,31 @@ class MppHandler(Handler):
         return mr.to_markdown(data, self.path, data["engine"], bool(getattr(self.opts, "gantt", False)))
 
 
+class VisioHandler(Handler):
+    """office2md's handler for Visio drawings; the reading is in visio_reader.py."""
+    name = "vsdx"
+
+    def _reader(self):
+        here = str(Path(__file__).parent)
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import visio_reader
+        return visio_reader
+
+    def outline(self) -> dict:
+        return self.dump()
+
+    def dump(self) -> dict:
+        vr = self._reader()
+        try:
+            return vr.read(self.path)
+        except vr.VisioError as e:
+            raise ReadError(str(e)) from None
+
+    def to_markdown(self, data: dict) -> str:
+        return self._reader().to_markdown(data, self.path)
+
+
 HANDLERS: dict[str, type[Handler]] = {
     ".eml": EmlHandler, ".msg": MsgHandler,
     ".zip": ArchiveHandler, ".7z": ArchiveHandler,
@@ -2475,6 +2570,7 @@ HANDLERS: dict[str, type[Handler]] = {
     ".pptx": PptxHandler, ".potx": PptxHandler, ".pptm": PptxHandler,
     ".pdf": PdfHandler,
     ".mpp": MppHandler, ".mpt": MppHandler,
+    ".vsdx": VisioHandler, ".vsdm": VisioHandler,
 }
 
 
@@ -2616,6 +2712,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mail-engine", choices=["auto", "outlook", "olefile"], default="auto",
                     help="msg: Outlook COM when available (default), or the pure-Python olefile reader")
     ap.add_argument("--password", help="zip/7z: password for listing an encrypted archive")
+    ap.add_argument("--layout", action="store_true",
+                    help="pdf: keep each page's columns aligned (tables, forms) instead of joining wrapped lines")
     ap.add_argument("--accept-changes", action="store_true",
                     help="docx: the text as if every tracked change were accepted, without change or comment marks")
     ap.add_argument("--mpp-engine", choices=["auto", "project", "mpxj"], default="auto",
@@ -2628,10 +2726,20 @@ def main(argv: list[str] | None = None) -> int:
     if not opts.file.exists():
         sys.exit(f"[office2md] file not found: {opts.file}")
     ext = opts.file.suffix.lower()
+    legacy_note, legacy_tmp = "", None
     if ext in (".xls", ".doc", ".ppt"):
-        sys.exit(f"[office2md] legacy binary format {ext} is not supported. "
-                 "Open it in Office and 'Save as' the x-format, or convert with LibreOffice: "
-                 f"soffice --headless --convert-to {ext}x \"{opts.file}\"")
+        # the old binary formats: let Office (or LibreOffice) write the x-format, then read that
+        sys.path.insert(0, str(Path(__file__).parent))
+        import office_com
+        got = office_com.convert_legacy(opts.file)
+        if got is None:
+            sys.exit(f"[office2md] legacy binary format {ext} could not be converted: neither Microsoft Office "
+                     "nor LibreOffice is available here. Open it in Office and 'Save as' the x-format, or "
+                     f"convert with LibreOffice: soffice --headless --convert-to {ext[1:]}x \"{opts.file}\"")
+        original = opts.file
+        opts.file, legacy_tmp, how = got
+        legacy_note = f"> {original.name} is the old {ext} format; {how} and read from that copy."
+        ext = opts.file.suffix.lower()
     cls = HANDLERS.get(ext)
     if cls is None and MppHandler.handles(opts.file):
         cls = MppHandler                   # Project XML; other .xml files stay unsupported
@@ -2663,6 +2771,11 @@ def main(argv: list[str] | None = None) -> int:
                 lines = text.split("\n", 1)
                 text = lines[0] + "\n\n" + note + "\n" + (lines[1] if len(lines) > 1 else "")
 
+    if legacy_note and not opts.json:
+        head, _, rest = text.partition("\n")
+        text = head + "\n\n" + legacy_note + "\n" + rest
+    if legacy_tmp:
+        shutil.rmtree(legacy_tmp, ignore_errors=True)
     if opts.out:
         opts.out.write_text(text, encoding="utf-8")
         print(f"[office2md] wrote {opts.out} ({len(text)} chars)")
