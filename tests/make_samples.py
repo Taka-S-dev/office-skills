@@ -281,6 +281,127 @@ sd.paragraphs[-1]._p.addnext(tb)           # keeps sectPr last, as Word requires
 sd.save(out / "spec.docx")
 (out / "fig.png").unlink()
 
+# --- diagram.xlsx: what Excel "drawing paper" specifications contain ---------------------
+# a sequence diagram drawn with boxes, dashed lifelines and arrows (labels in text boxes and in a
+# cell), a flowchart with glued connectors, a record layout with merged cells and input rules,
+# and a chart with a picture.
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.chart import BarChart, Reference as ChartRef
+
+dw = openpyxl.Workbook()
+seq_ws = dw.active; seq_ws.title = "シーケンス"
+seq_ws["G9"] = "在庫照会"                                   # a message label written in a cell
+flow_ws = dw.create_sheet("フロー")
+pk = dw.create_sheet("レイアウト")
+pk["A2"] = "桁"
+for i in range(8):
+    pk.cell(row=2, column=2 + i, value=i)
+pk["A3"] = 0; pk["B3"] = "区分"; pk.merge_cells("B3:E3"); pk["F3"] = "店舗"; pk.merge_cells("F3:I3")
+pk["A4"] = 1; pk["B4"] = "日付"; pk.merge_cells("B4:I4")
+pk["A5"] = "2-3"; pk["B5"] = "金額"; pk.merge_cells("B5:I5")
+pk["K2"] = "要否"; pk["L2"] = "版"
+for v, r in (("必須", 3), ("任意", 4), ("必須", 5)):
+    pk.cell(row=r, column=11, value=v)
+pk["N2"] = 1; pk["N3"] = 2; pk["N4"] = 3
+dv1 = DataValidation(type="list", formula1='"必須,任意"', allow_blank=True); dv1.add("K3:K5"); pk.add_data_validation(dv1)
+dv2 = DataValidation(type="list", formula1="=$N$2:$N$4"); dv2.add("L3:L5"); pk.add_data_validation(dv2)
+gr = dw.create_sheet("グラフ")
+for row in (("月", "売上"), ("1月", 120), ("2月", 80), ("3月", 150)):
+    gr.append(row)
+bc = BarChart(); bc.title = "月別売上"
+bc.add_data(ChartRef(gr, min_col=2, min_row=1, max_row=4), titles_from_data=True)
+bc.set_categories(ChartRef(gr, min_col=1, min_row=2, max_row=4))
+gr.add_chart(bc, "D2")
+try:
+    from PIL import Image as _PIL
+    from openpyxl.drawing.image import Image as XLImage
+    _PIL.new("RGB", (40, 20), (200, 30, 30)).save(out / "_pic.png")
+    pic = XLImage(str(out / "_pic.png")); gr.add_image(pic, "D18")
+except ImportError:
+    pass
+dw.save(out / "diagram.xlsx")
+if (out / "_pic.png").exists():
+    (out / "_pic.png").unlink()
+
+XDR = ('xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
+       'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"')
+
+
+def _anchor(c1, r1, c2, r2, body):
+    return (f"<xdr:twoCellAnchor><xdr:from><xdr:col>{c1}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r1}</xdr:row>"
+            f"<xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>{c2}</xdr:col><xdr:colOff>0</xdr:colOff>"
+            f"<xdr:row>{r2}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>{body}<xdr:clientData/></xdr:twoCellAnchor>")
+
+
+def _box(sid, name, text, prst="rect", txbox=False):
+    tb = ' txBox="1"' if txbox else ""
+    return (f'<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="{sid}" name="{name}"/><xdr:cNvSpPr{tb}/></xdr:nvSpPr>'
+            f'<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="{prst}"><a:avLst/></a:prstGeom></xdr:spPr>'
+            f'<xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="ja-JP"/><a:t>{text}</a:t></a:r></a:p></xdr:txBody></xdr:sp>')
+
+
+def _line(sid, name, flip_h=False, head=False, tail=False, dash=False, st=None, en=None):
+    flip = ' flipH="1"' if flip_h else ""
+    glue = (f'<a:stCxn id="{st}" idx="2"/>' if st else "") + (f'<a:endCxn id="{en}" idx="0"/>' if en else "")
+    ln = ('<a:solidFill><a:srgbClr val="000000"/></a:solidFill>' + ('<a:prstDash val="dash"/>' if dash else "")
+          + ('<a:headEnd type="triangle"/>' if head else "") + ('<a:tailEnd type="triangle"/>' if tail else ""))
+    return (f'<xdr:cxnSp macro=""><xdr:nvCxnSpPr><xdr:cNvPr id="{sid}" name="{name}"/><xdr:cNvCxnSpPr>{glue}</xdr:cNvCxnSpPr></xdr:nvCxnSpPr>'
+            f'<xdr:spPr><a:xfrm{flip}><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="straightConnector1"><a:avLst/></a:prstGeom>'
+            f'<a:ln w="9525">{ln}</a:ln></xdr:spPr></xdr:cxnSp>')
+
+
+seq_xml = "".join([
+    _anchor(1, 1, 3, 3, _box(2, "ブラウザ", "ブラウザ")), _anchor(5, 1, 7, 3, _box(3, "APIサーバ", "APIサーバ")),
+    _anchor(9, 1, 11, 3, _box(4, "DB", "DB")),
+    _anchor(2, 3, 2, 18, _line(5, "生存線 ブラウザ", dash=True)), _anchor(6, 3, 6, 18, _line(6, "生存線 APIサーバ", dash=True)),
+    _anchor(10, 3, 10, 18, _line(7, "生存線 DB", dash=True)),
+    _anchor(2, 6, 6, 6, _line(8, "矢印 1", tail=True)), _anchor(3, 4, 5, 6, _box(9, "ラベル 1", "注文登録", txbox=True)),
+    _anchor(6, 9, 10, 9, _line(10, "矢印 2", tail=True)),
+    _anchor(6, 12, 10, 12, _line(11, "矢印 3", head=True)), _anchor(7, 10, 9, 11, _box(12, "ラベル 3", "在庫数", txbox=True)),
+    _anchor(2, 15, 6, 15, _line(13, "矢印 4", flip_h=True, tail=True)), _anchor(3, 13, 5, 14, _box(14, "ラベル 4", "登録完了", txbox=True)),
+])
+flow_xml = "".join([
+    _anchor(1, 1, 4, 3, _box(2, "開始", "開始")), _anchor(1, 5, 4, 8, _box(3, "判定", "判定", prst="diamond")),
+    _anchor(1, 10, 4, 12, _box(4, "終了", "終了")), _anchor(5, 5, 8, 8, _box(7, "差戻し", "差戻し")),
+    _anchor(2, 3, 2, 5, _line(5, "コネクタ 開始-判定", tail=True, st=2, en=3)),
+    _anchor(2, 8, 2, 10, _line(6, "コネクタ 判定-終了", tail=True, st=3, en=4)),
+    _anchor(4, 6, 5, 6, _line(8, "矢印 判定-差戻し", tail=True)),
+])
+
+
+def inject_drawing(xlsx: Path, sheet_xml: str, name: str, body: str) -> None:
+    """Add a drawing part with the given anchors to one worksheet of an existing package."""
+    import shutil
+    import zipfile
+    rels_name = sheet_xml.replace("worksheets/", "worksheets/_rels/") + ".rels"
+    rel = (f'<Relationship Id="rIdInj{name}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" '
+           f'Target="../drawings/{name}.xml"/>')
+    drawing = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr {XDR}>{body}</xdr:wsDr>'
+    tmp = xlsx.with_suffix(".tmp")
+    with zipfile.ZipFile(xlsx) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        names = zin.namelist()
+        for n in names:
+            data = zin.read(n)
+            if n == "[Content_Types].xml":
+                data = data.replace(b"</Types>", f'<Override PartName="/xl/drawings/{name}.xml" '
+                                    'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>'.encode())
+            elif n == sheet_xml:
+                tag = f'<drawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdInj{name}"/>'.encode()
+                data = data.replace(b"</worksheet>", tag + b"</worksheet>", 1)
+            elif n == rels_name:
+                data = data.replace(b"</Relationships>", rel.encode() + b"</Relationships>")
+            zout.writestr(n, data)
+        if rels_name not in names:
+            zout.writestr(rels_name, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                          + rel + "</Relationships>")
+        zout.writestr(f"xl/drawings/{name}.xml", drawing)
+    shutil.move(tmp, xlsx)
+
+
+inject_drawing(out / "diagram.xlsx", "xl/worksheets/sheet1.xml", "drawing91", seq_xml)
+inject_drawing(out / "diagram.xlsx", "xl/worksheets/sheet2.xml", "drawing92", flow_xml)
+
 # --- pptx ---
 from pptx import Presentation
 from pptx.util import Inches

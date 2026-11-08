@@ -361,103 +361,232 @@ class XlsxHandler(Handler):
             pass
         return sorted(hits)
 
-    # -- drawings (text boxes, shapes, pictures) -------------------------------------------
-    # openpyxl ignores drawings, so a text box saying "修正済み" is invisible to it. The text is
-    # plain XML in xl/drawings/, so read it from the package directly and anchor it to a cell.
+    # -- drawings, charts, input rules (see xlsx_drawing.py) ----------------------------
 
-    _NS = {
-        "m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
-        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-        "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
-        "xdr": "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing",
-        "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
-    }
+    # the sheet part only counts when followed by "!", so "$N$2:$N$4" is a local range, not a sheet name
+    _REF = re.compile(r"^(?:(?:'((?:[^']|'')+)'|([^'!]+))!)?\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?$")
 
-    def _sheet_drawings(self) -> dict[str, list[dict]]:
-        """sheet title -> [{kind, name, anchor, text}] for every shape/picture/chart on the sheet."""
-        from lxml import etree
-        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
-        ns = self._NS
-        result: dict[str, list[dict]] = {}
-        try:
-            z = zipfile.ZipFile(self.path)
-        except zipfile.BadZipFile:
-            return result
-        with z:
-            names = set(z.namelist())
+    def _resolve_ref(self, wb, ref: str, default_sheet: str | None = None) -> list:
+        """Values of a cell or range reference ('Sheet'!$A$2:$A$5, A1, or a defined name)."""
+        ref = (ref or "").strip().lstrip("=")
+        if not ref or len(ref) > 300:
+            return []
+        if "!" not in ref and not re.match(r"^\$?[A-Z]{1,3}\$?\d+", ref):
+            try:
+                dn = wb.defined_names.get(ref) if hasattr(wb.defined_names, "get") else None
+                if dn is not None:
+                    out = []
+                    for sh, rng in dn.destinations:
+                        out += self._resolve_ref(wb, f"'{sh}'!{rng}")
+                    return out[:2000]
+            except Exception:
+                return []
+            return []
+        m = self._REF.match(ref.replace(" ", ""))
+        if not m:
+            return []
+        sheet = (m.group(1) or "").replace("''", "'") or m.group(2) or default_sheet
+        if not sheet or sheet not in wb.sheetnames:
+            return []
+        ws = wb[sheet]
+        c1, r1 = openpyxl_col(m.group(3)), int(m.group(4))
+        c2, r2 = (openpyxl_col(m.group(5)), int(m.group(6))) if m.group(5) else (c1, r1)
+        out = []
+        for r in range(min(r1, r2), min(max(r1, r2), min(r1, r2) + 2000) + 1):
+            for c in range(min(c1, c2), max(c1, c2) + 1):
+                v = ws.cell(row=r, column=c).value
+                out.append(format_value(v, ws.cell(row=r, column=c).number_format) if v is not None else "")
+                if len(out) >= 2000:
+                    return out
+        return out
 
-            def rels(part: str) -> dict[str, tuple[str, str]]:
-                d = part.rsplit("/", 1)[0]
-                rp = f"{d}/_rels/{part.rsplit('/', 1)[1]}.rels"
-                if rp not in names:
-                    return {}
-                root = etree.fromstring(z.read(rp), parser)
-                out = {}
-                for r in root.findall("rel:Relationship", ns):
-                    tgt = r.get("Target") or ""
-                    if tgt.startswith("/"):
-                        tgt = tgt.lstrip("/")
-                    else:
-                        base = d.split("/")
-                        for seg in tgt.split("/"):
-                            if seg == "..":
-                                base.pop()
-                            else:
-                                base.append(seg)
-                        tgt = "/".join(base)
-                    out[r.get("Id")] = (r.get("Type", "").rsplit("/", 1)[-1], tgt)
-                return out
+    def _rule_text(self, wb, sheet: str, v: dict) -> str:
+        t, op = v["type"], v["op"]
+        if t == "list":
+            f1 = v["f1"].strip()
+            if f1.startswith('"') and f1.endswith('"'):
+                choices = [c.strip() for c in f1[1:-1].split(",")]
+            else:
+                choices = [str(c) for c in self._resolve_ref(wb, f1, sheet) if str(c).strip()]
+            text = "list: " + ", ".join(c for c in (re.sub(r"\s+", " ", x) for x in choices[:60]) if c)
+            if not (f1.startswith('"') and f1.endswith('"')):
+                text += f" (from {f1.lstrip('=')})" if choices else f" (source {f1.lstrip('=')} could not be read)"
+            return text
+        ops = {"between": "between {0} and {1}", "notBetween": "not between {0} and {1}", "equal": "= {0}",
+               "notEqual": "≠ {0}", "greaterThan": "> {0}", "lessThan": "< {0}", "greaterThanOrEqual": "≥ {0}",
+               "lessThanOrEqual": "≤ {0}"}
+        cond = ops.get(op or "between", "{0} {1}").format(v["f1"], v["f2"]).strip()
+        return f"{t}: {cond}" if t not in ("any", "") else "any value" + (f" ({v['prompt']})" if v.get("prompt") else "")
 
-            if "xl/workbook.xml" not in names:
-                return result
-            wb_root = etree.fromstring(z.read("xl/workbook.xml"), parser)
-            wb_rels = rels("xl/workbook.xml")
-            for sh in wb_root.findall("m:sheets/m:sheet", ns):
-                title = sh.get("name")
-                rid = sh.get("{%s}id" % ns["r"])
-                sheet_part = wb_rels.get(rid, ("", ""))[1]
-                if not sheet_part:
-                    continue
-                for typ, tgt in rels(sheet_part).values():
-                    if typ != "drawing" or tgt not in names:
-                        continue
-                    droot = etree.fromstring(z.read(tgt), parser)
-                    items: list[dict] = []
-                    for anchor in droot:
-                        frm = anchor.find("xdr:from", ns)
-                        if frm is not None:
-                            col = int(frm.findtext("xdr:col", "0", ns)) + 1
-                            row = int(frm.findtext("xdr:row", "0", ns)) + 1
-                            at = f"{_col_letter(col)}{row}"
-                        else:
-                            at = "(absolute)"
-                        self._collect_shapes(anchor, at, items, ns)
-                    if items:
-                        result.setdefault(title, []).extend(items)
-        return result
+    def _sheet_extras(self, ws, entry: dict, cells: list[dict], xd) -> dict:
+        shapes = entry.get("shapes", [])
+        # the table of objects keeps its old shape (anchor, kind, name, text) for diff and find
+        drawings = []
+        pictures = []
+        for sh in shapes:
+            if sh["kind"] == "picture":
+                saved = ""
+                out_dir = getattr(self.opts, "images", None)
+                if out_dir and sh.get("blob"):
+                    out_dir = Path(out_dir)
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    self._fig_n += 1
+                    for attempt in range(1000):
+                        target = out_dir / f"figure-{self._fig_n:03d}{'' if attempt == 0 else f'-{attempt}'}.{sh['media_ext']}"
+                        try:
+                            with open(target, "xb") as f:
+                                f.write(sh["blob"])
+                            break
+                        except FileExistsError:
+                            continue
+                    base = getattr(self.opts, "images_base", None)
+                    try:
+                        saved = target.resolve().relative_to(Path(base).resolve()).as_posix() if base else str(target)
+                    except ValueError:
+                        saved = str(target)
+                dims = sh.get("dims")
+                pictures.append({"from": sh["from"], "to": sh["to"], "name": sh["name"], "alt": sh["alt"],
+                                 "size": f"{dims[0]}x{dims[1]}" if dims else "", "saved": saved,
+                                 "placeholder": bool(dims and dims[0] <= 2 and dims[1] <= 2)})
+                drawings.append({"kind": "picture", "name": sh["name"], "anchor": sh["from"], "text": sh["alt"]})
+            elif sh["kind"] == "shape" and sh.get("text"):
+                drawings.append({"kind": "shape", "name": sh["name"], "anchor": sh["from"], "text": sh["text"]})
+            elif sh["kind"] == "arrowshape" and sh.get("text"):
+                drawings.append({"kind": "arrow", "name": sh["name"], "anchor": sh["from"], "text": sh["text"]})
+            elif sh["kind"] in ("chart", "frame"):
+                drawings.append({"kind": sh["kind"], "name": sh["name"], "anchor": sh["from"], "text": sh["alt"]})
+        diagram = None
+        if any(sh["kind"] in ("connector", "arrowshape") for sh in shapes) and entry.get("metrics"):
+            diagram = xd.analyse(shapes, [{"address": c["address"], "text": c["display"]} for c in cells], entry["metrics"])
+            diagram["mermaid_sequence"] = xd.mermaid_sequence(diagram["sequence"]) if diagram["sequence"] else ""
+            diagram["mermaid_flow"] = xd.mermaid_flow(diagram["edges"]) if diagram["edges"] else ""
+        rules = [{"range": v["sqref"], "rule": self._rule_text(ws.parent, ws.title, v)} for v in entry.get("validations", [])]
+        return {"drawings": drawings, "pictures": pictures, "diagram": diagram, "charts": entry.get("charts", []),
+                "validations": rules, "shape_count": len(shapes)}
 
-    def _collect_shapes(self, node, at: str, items: list[dict], ns: dict) -> None:
-        for child in node:
-            tag = etree_local(child.tag)
-            if tag == "sp" or tag == "cxnSp":
-                name = child.find("xdr:nvSpPr/xdr:cNvPr", ns) if tag == "sp" else child.find("xdr:nvCxnSpPr/xdr:cNvPr", ns)
-                paras = []
-                for p in child.findall("xdr:txBody/a:p", ns):
-                    t = "".join(x.text or "" for x in p.iter("{%s}t" % ns["a"]))
-                    if t.strip():
-                        paras.append(t.strip())
-                items.append({"kind": "shape", "name": name.get("name") if name is not None else "",
-                              "anchor": at, "text": "\n".join(paras)})
-            elif tag == "pic":
-                name = child.find("xdr:nvPicPr/xdr:cNvPr", ns)
-                items.append({"kind": "picture", "name": name.get("name") if name is not None else "",
-                              "anchor": at, "text": ""})
-            elif tag == "graphicFrame":
-                name = child.find("xdr:nvGraphicFramePr/xdr:cNvPr", ns)
-                items.append({"kind": "chart/frame", "name": name.get("name") if name is not None else "",
-                              "anchor": at, "text": ""})
-            elif tag == "grpSp":
-                self._collect_shapes(child, at, items, ns)
+    def _render_extras(self, s: dict) -> list[str]:
+        out: list[str] = []
+        d = s.get("diagram")
+        if d and (d["sequence"] or d["edges"] or d["unexplained"]):
+            out += ["", "**Diagram** (reconstructed from the shapes' positions; verify against the rendered sheet)"]
+            seq = d["sequence"]
+            if seq:
+                out += ["", "Sequence:", "", "```mermaid", d["mermaid_sequence"].replace("```", "ˋˋˋ"), "```", ""]
+                for i, msg in enumerate(seq["messages"], start=1):
+                    label = md_escape(msg["label"]) if msg["label"] else "_(no label found)_"
+                    note = f"arrow at {msg['at']}" + ("" if msg["direction_known"] else ", direction assumed: no single arrowhead")
+                    src = f"; label from {msg['label_source']}" if msg["label_source"] else ""
+                    out.append(f"{i}. {md_escape(msg['from'])} → {md_escape(msg['to'])}: {label}  ({note}{src})")
+                out.append("")
+                out.append("Participants: " + "; ".join(f"{md_escape(p['name'])} ({p['source']})" for p in seq["participants"]))
+            if d["edges"]:
+                out += ["", "Connections:", "", "```mermaid", d["mermaid_flow"].replace("```", "ˋˋˋ"), "```", ""]
+                for e in d["edges"]:
+                    arrow = "↔" if e["both"] else "—" if e["none"] else "→"
+                    label = f" [{md_escape(e['label'])}]" if e.get("label") else ""
+                    out.append(f"- {md_escape(e['from'])} {arrow} {md_escape(e['to'])}{label}  ({e['how']}, '{md_escape(e['line'])}')")
+            if d["unexplained"]:
+                out += ["", f"Lines not interpreted ({len(d['unexplained'])}): "
+                        + "; ".join(f"'{md_escape(u['line'])}' {u['from']}→{u['to']} (arrowhead: {u['arrow']})"
+                                    for u in d["unexplained"][:30])]
+        if s.get("charts"):
+            out += ["", "**Charts**"]
+            for ch in s["charts"]:
+                title = f" — {md_escape(ch['title'])}" if ch["title"] else ""
+                out.append(f"- {md_escape(ch['name'])} ({ch['type']}, {ch['from']}:{ch['to']}){title}")
+                for se in ch["series"]:
+                    pairs = ", ".join(f"{md_escape(c)}={md_escape(v)}" for c, v in zip(se["categories"], se["values"])) \
+                        if se["categories"] else ", ".join(md_escape(v) for v in se["values"])
+                    out.append(f"  - {md_escape(se['name']) or 'series'}: {pairs}")
+        if s.get("pictures"):
+            out += ["", "**Pictures**"]
+            for pc in s["pictures"]:
+                where = pc["saved"] or pc["name"]
+                size = f" {pc['size']}" if pc["size"] else ""
+                ph = " (placeholder image, no visual content)" if pc["placeholder"] else ""
+                alt = f" — {md_escape(pc['alt'])}" if pc["alt"] else " — (no alt text; content not extracted)"
+                out.append(f"- [figure: {where}{size}{ph}] at {pc['from']}:{pc['to']}{alt}")
+        if s.get("validations"):
+            out += ["", "**Input rules** (data validation)",
+                    md_table([[v["range"], v["rule"]] for v in s["validations"]], header=["range", "rule"])]
+        return out
+
+    @staticmethod
+    def _merge_spans(merged_ranges: list[str]) -> dict[str, str]:
+        """anchor cell -> "[B3:E3, 4 cols]" for merges larger than one cell (field widths in layouts)."""
+        spans = {}
+        for rng in merged_ranges:
+            m = re.match(r"([A-Z]+)(\d+):([A-Z]+)(\d+)$", rng)
+            if not m:
+                continue
+            cols = openpyxl_col(m.group(3)) - openpyxl_col(m.group(1)) + 1
+            rows = int(m.group(4)) - int(m.group(2)) + 1
+            size = (f"{cols} cols" if cols > 1 else "") + (" x " if cols > 1 and rows > 1 else "") + (f"{rows} rows" if rows > 1 else "")
+            spans[f"{m.group(1)}{m.group(2)}"] = f"[{rng}, {size}]"
+        return spans
+
+    def _render_blocks(self, s: dict) -> list[str]:
+        """The sheet as separate blocks (tables, notes) instead of one wide grid: Excel sheets used as
+        drawing paper put a diagram, a table and a few notes side by side."""
+        cells = {}
+        for c in s["cells"]:
+            m = re.match(r"([A-Z]+)(\d+)$", c["address"])
+            if m:
+                cells[(int(m.group(2)), openpyxl_col(m.group(1)))] = c
+        occupied = set(cells)
+        for rng in s["merged_ranges"]:
+            m = re.match(r"([A-Z]+)(\d+):([A-Z]+)(\d+)$", rng)
+            if m and (int(m.group(2)), openpyxl_col(m.group(1))) in cells:
+                for r in range(int(m.group(2)), int(m.group(4)) + 1):
+                    for cc in range(openpyxl_col(m.group(1)), openpyxl_col(m.group(3)) + 1):
+                        occupied.add((r, cc))
+        parent = {p: p for p in occupied}
+
+        def find(p):
+            while parent[p] != p:
+                parent[p] = parent[parent[p]]
+                p = parent[p]
+            return p
+        for (r, c) in occupied:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    q = (r + dr, c + dc)
+                    if q in parent and q != (r, c):
+                        a, b = find((r, c)), find(q)
+                        if a != b:
+                            parent[a] = b
+        groups: dict = {}
+        for p in occupied:
+            groups.setdefault(find(p), []).append(p)
+        spans = self._merge_spans(s["merged_ranges"])
+        hr, hc = set(s["hidden_row_set"]), set(s["hidden_col_set"])
+        out: list[str] = []
+        for members in sorted(groups.values(), key=lambda g: (min(p[0] for p in g), min(p[1] for p in g))):
+            r1, r2 = min(p[0] for p in members), max(p[0] for p in members)
+            c1, c2 = min(p[1] for p in members), max(p[1] for p in members)
+            rng = f"{_col_letter(c1)}{r1}:{_col_letter(c2)}{r2}"
+
+            def val(r, c):
+                cell = cells.get((r, c))
+                if not cell:
+                    return ""
+                v = str(cell["display"])
+                span = spans.get(cell["address"])
+                return f"{v} {span}" if span else v
+            if c1 == c2 or (r1 == r2 and len([p for p in members if p in cells]) == 1):
+                out.append(f"Block {rng}:")
+                for r in range(r1, r2 + 1):
+                    for c in range(c1, c2 + 1):
+                        if (r, c) in cells:
+                            flag = " (h)" if r in hr or c in hc else ""
+                            out.append(f"- {cells[(r, c)]['address']}{flag}: {md_escape(val(r, c)).replace('<br>', ' / ')}")
+            else:
+                out.append(f"Block {rng}:")
+                header = [""] + [_col_letter(c) + (" (h)" if c in hc else "") for c in range(c1, c2 + 1)]
+                body = [[f"{r} (h)" if r in hr else r] + [val(r, c) for c in range(c1, c2 + 1)] for r in range(r1, r2 + 1)]
+                out.append(md_table(body, header=header))
+            out.append("")
+        return out or ["_(no cell content)_"]
 
     # -- content ------------------------------------------------------------------------
 
@@ -468,7 +597,10 @@ class XlsxHandler(Handler):
         max_cols = self.opts.max_cols
         wanted = self.opts.sheet
         show_formulas = self.opts.formulas
-        drawings = self._sheet_drawings()
+        sys.path.insert(0, str(Path(__file__).parent))
+        import xlsx_drawing
+        model = xlsx_drawing.read_workbook(self.path, values_wb, lambda ref: self._resolve_ref(values_wb, ref))
+        self._fig_n = 0
 
         sheets = []
         for ws in values_wb.worksheets:
@@ -537,7 +669,7 @@ class XlsxHandler(Handler):
                 "formulas_shown": formulas_seen,
                 "formulas_cached": formulas_cached,
                 "uncached_formulas": uncached_addrs,
-                "drawings": drawings.get(ws.title, []),
+                **self._sheet_extras(ws, model.get(ws.title, {}), cells, xlsx_drawing),
                 "form": self._form_pairs(ws, fws) if self.opts.form else [],
                 "hidden_row_set": sorted(hidden_rows),
                 "hidden_col_set": sorted(hidden_cols),
@@ -718,10 +850,13 @@ class XlsxHandler(Handler):
                     out.append("")
                     out.append("> Pairing is by position (value to the right of a label, else below). "
                                "Verify a pair against the grid before relying on it.")
+            elif getattr(self.opts, "blocks", False):
+                out += self._render_blocks(s)
             elif self.opts.cells:
+                spans = self._merge_spans(s["merged_ranges"])
                 for c in s["cells"]:
                     v = md_escape(c["display"]).replace("<br>", " / ")
-                    extra = ""
+                    extra = f"  {spans[c['address']]}" if c["address"] in spans else ""
                     if c["formula"] is None and c["display"] != c["value"] and not isinstance(c["value"], str):
                         extra += f"  (raw {md_escape(c['value'])})"
                     if c["hidden"]:
@@ -732,7 +867,12 @@ class XlsxHandler(Handler):
             elif self.opts.no_coords:
                 out.append(md_table(s["rows"]))
             else:
-                out.append(self._grid(s["rows"], s["hidden_row_set"], s["hidden_col_set"]))
+                spans = self._merge_spans(s["merged_ranges"])
+                rows = s["rows"]
+                if spans:
+                    rows = [[(f"{v} {spans[f'{_col_letter(ci)}{ri}']}" if f"{_col_letter(ci)}{ri}" in spans and v not in (None, "")
+                              else v) for ci, v in enumerate(r, start=1)] for ri, r in enumerate(rows, start=1)]
+                out.append(self._grid(rows, s["hidden_row_set"], s["hidden_col_set"]))
             notes = []
             if s["truncated_rows"]:
                 notes.append(f"rows truncated at {self.opts.max_rows}; rerun with --sheet \"{s['name']}\" --max-rows 0")
@@ -753,6 +893,7 @@ class XlsxHandler(Handler):
                 if any(d["kind"] == "picture" for d in s["drawings"]):
                     out.append("> Pictures may contain text; convert with office-edit/scripts/pdf_tool.py topdf "
                                "and read the PDF to see them.")
+            out += self._render_extras(s)
             out.append("")
         return "\n".join(out)
 
@@ -2014,6 +2155,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cells", action="store_true",
                     help="xlsx: list non-empty cells as Sheet!A1 = value instead of a grid (good for forms and comparisons)")
     ap.add_argument("--no-coords", action="store_true", help="xlsx: plain table without row numbers / column letters")
+    ap.add_argument("--blocks", action="store_true",
+                    help="xlsx: split each sheet into blocks (tables, notes) instead of one grid; merged cells show their span")
     ap.add_argument("--raw", action="store_true",
                     help="xlsx: raw stored values instead of what Excel displays (0.15 instead of 15%%, datetimes in ISO)")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of Markdown")

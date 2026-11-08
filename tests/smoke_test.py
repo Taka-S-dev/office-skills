@@ -137,6 +137,20 @@ def main() -> int:
             check("msg via olefile: subject, body, attachment", "月次報告の修正依頼" in o and "No.11" in o and "見積条件.txt" in o, o)
         else:
             print("  [skip] msg fixture not present")
+        dg = d / "diagram.xlsx"
+        o = run(READ, dg, "--sheet", "シーケンス")
+        check("xlsx sequence diagram reconstructed from shapes (order, direction, labels from text box and cell)",
+              all(x in o for x in ["P1->>P2: 注文登録", "P2->>P3: 在庫照会", "P3->>P2: 在庫数", "P2->>P1: 登録完了",
+                                   "label from cell G9", "participant P3 as DB"]), o)
+        o = run(READ, dg, "--sheet", "フロー")
+        check("xlsx flowchart connections, glued and touching",
+              "- 開始 → 判定  (glued" in o and "- 判定 → 終了  (glued" in o and "- 判定 → 差戻し  (touching" in o, o)
+        o = run(READ, dg, "--sheet", "レイアウト", "--blocks")
+        check("xlsx record layout: merged spans and input rules (literal and range)",
+              "区分 [B3:E3, 4 cols]" in o and "日付 [B4:I4, 8 cols]" in o and "Block A2:I5:" in o
+              and "| K3:K5 | list: 必須, 任意 |" in o and "| L3:L5 | list: 1, 2, 3 (from $N$2:$N$4) |" in o, o)
+        o = run(READ, dg, "--sheet", "グラフ")
+        check("xlsx chart series and picture size", "売上: 1月=120, 2月=80, 3月=150" in o and "40x20" in o, o)
         o = run(READ, xlsx, "--sheet", "申請書", "--form")
         check("xlsx --form pairs label right / merged / below / header row",
               all(x in o for x in ["- 申請日 = 2026/10/01  (申請書!B2 → C2)", "- 対象機種 = XYZ-100  (申請書!B3 → D3)",
