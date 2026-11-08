@@ -535,3 +535,169 @@ def diagram_edits(data: dict, md: str) -> list[str]:
             if msg not in now and (msg[1], msg[0], msg[2]) not in now:
                 out.append(f"{s['name']}: the reconstruction's message {msg[0]} → {msg[1]} '{msg[2]}' is no longer in the Markdown.")
     return out
+
+
+# -- the printed document as a reference, and pages to compare by eye -----------------------------
+
+def printed_pages(pdf: Path) -> list[str]:
+    """Text of each page of the document as Word printed it, wrapped lines joined, with the lines
+    that repeat on many pages (running headers and footers, page numbers) removed."""
+    import pypdf
+    try:
+        reader = pypdf.PdfReader(str(pdf))
+        raw = [(p.extract_text() or "") for p in reader.pages[:2000]]
+    except Exception:
+        return []
+    lines_per_page = [[x.strip() for x in t.splitlines() if x.strip()] for t in raw]
+    seen = Counter(x for lines in lines_per_page for x in set(lines))
+    repeat = max(3, int(0.3 * len(raw)))
+    pages = []
+    for lines in lines_per_page:
+        keep = [x for x in lines if seen[x] < repeat and not re.fullmatch(r"[-‐－ー\s]*[0-9０-９]{1,4}[-‐－ー\s]*"
+                                                                            r"(/\s*[0-9]{1,4})?", x)]
+        pages.append("\n".join(keep))         # not reflowed: a table row must not run into the next
+    return pages
+
+
+def page_spans(md: str, pages: list[str], split_sentences=None) -> list[tuple[int, int | None, int | None, float]]:
+    """(page number, first md line, last md line, share of the page's text found in the md) for
+    every page: where in the Markdown the page's text sits, by the printed pieces it holds."""
+    norm_lines = [norm_text(x) for x in md.splitlines()]
+    flat = "".join(norm_lines)
+    out = []
+    for n, text in enumerate(pages, start=1):
+        ps = [k for k, _ in pieces(text, 8)]
+        if not ps:
+            out.append((n, None, None, 1.0))
+            continue
+        found = [k for k in ps if k in flat]
+        hits = []
+        for k in found[:40]:
+            probe = k[:16]
+            at = next((i for i, line in enumerate(norm_lines) if probe in line), None)
+            if at is not None:
+                hits.append(at)
+        share = len(found) / len(ps)
+        if hits:
+            hits.sort()
+            # the densest stretch of hits: a page's text sits together, while a phrase it shares with
+            # the table of contents or a running title matches far away
+            best = max(range(len(hits)), key=lambda i: sum(1 for h in hits if 0 <= h - hits[i] <= 60))
+            near = [h for h in hits if 0 <= h - hits[best] <= 60]
+            out.append((n, near[0] + 1, near[-1] + 1, share))
+        else:
+            out.append((n, None, None, share))
+    return out
+
+
+def page_checks(spans, pdf_name: str, md_name: str, sample: int = 5, worst: int = 5) -> list[tuple[str, str, str]]:
+    """Visual checks for a spread of pages plus the pages whose text the Markdown matches least."""
+    if not spans:
+        return []
+    total = len(spans)
+    picks = set()
+    if total <= sample:
+        picks = {s[0] for s in spans}
+    else:
+        step = (total - 1) / (sample - 1)
+        picks = {spans[round(i * step)][0] for i in range(sample)}
+    ranked = sorted((s for s in spans if s[3] < 0.95), key=lambda s: s[3])
+    picks |= {s[0] for s in ranked[:worst]}
+    items = []
+    for n, first, last, share in spans:
+        if n not in picks:
+            continue
+        where = f"lines {first}-{last} of {md_name}" if first else f"(not located in {md_name})"
+        low = f"; only {share:.0%} of its sentences were found in the Markdown" if share < 0.95 else ""
+        items.append((f"page{n}", fingerprint([n, first, last, round(share, 2)]),
+                      f"Open {pdf_name} at page {n} and compare it with {where}{low}: paragraph order, every table "
+                      "(rows, columns, merged headings), text boxes and captions, numbering. Fix the Markdown where "
+                      "it differs."))
+    return items
+
+
+# -- accepting a review item with a reason ---------------------------------------------------------
+
+def item_id(kind: str, text: str) -> str:
+    return f"{kind}:{hashlib.sha1(text.encode('utf-8')).hexdigest()[:8]}"
+
+
+def accepted(lines: list[str]) -> dict[str, str]:
+    """id -> reason for lines 'accept <id> <reason>'. A line without a reason accepts nothing."""
+    out = {}
+    for ln in lines:
+        m = re.match(r"accept\s+(\S+)\s+(.{4,})$", ln)
+        if m:
+            out[m.group(1)] = m.group(2).strip()[:300]
+    return out
+
+
+# -- the history of runs ---------------------------------------------------------------------------
+
+def record_round(path: Path, counts: dict) -> list[dict]:
+    """Append this run's counts to <stem>.rounds.jsonl and return all runs, oldest first."""
+    import datetime
+    rows = []
+    try:
+        rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    except (OSError, ValueError):
+        rows = []
+    row = {"round": len(rows) + 1, "at": datetime.datetime.now().isoformat(timespec="seconds"), **counts}
+    rows.append(row)
+    try:
+        path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows[-200:]), encoding="utf-8")
+    except OSError:
+        pass
+    return rows
+
+
+def rounds_table(rows: list[dict], keys: list[str]) -> list[str]:
+    if len(rows) < 2:
+        return []
+    out = ["Runs so far (newest last): each run is one pass of checking and fixing.", "",
+           "| round | " + " | ".join(keys) + " |", "|---|" + "---|" * len(keys)]
+    for r in rows[-8:]:
+        out.append(f"| {r['round']} | " + " | ".join(str(r.get(k, "")) for k in keys) + " |")
+    return out + [""]
+
+
+# -- comparing with the printed text by pieces, not sentences ---------------------------------------
+# A PDF gives a table row as one line with its cells separated by spaces, and joins wrapped lines,
+# so sentence boundaries do not match the Markdown's. Pieces between spaces (and sentence ends) are
+# compared instead, against the whole Markdown with spacing and punctuation removed.
+
+_DROP = set(" \t\r\n　|*#>`~[](){}「」『』（）【】、，,.。:：;；・-‐－ー–—_\\/\"'“”‘’!！?？")
+
+
+def norm_text(s: str) -> str:
+    # as printed: a footnote mark shows its number ("UI2"), a word with furigana shows the word,
+    # a radical typed for an ideograph (地⽅) reads as the ideograph the Markdown has
+    s = office2md.radicals(s)
+    s = re.sub(r"\[\^e?([0-9]{1,6})\]", r"\1", s)
+    s = re.sub(r"｜([^《｜]{0,20})《[^》]{0,40}》", r"\1", s)
+    s = re.sub(r"\[\^[^\]\n]{1,40}\]|<[^<>]{1,300}>", "", s)
+    return "".join(ch for ch in s if ch not in _DROP)
+
+
+def pieces(text: str, min_len: int = 6) -> list[tuple[str, str]]:
+    """(normalised piece, original piece) for the parts of a printed text between spaces."""
+    out = []
+    for line in text.splitlines():
+        for part in re.split(r"\s{1,}|(?<=[。．])", line):
+            n = norm_text(part)
+            if len(n) >= min_len:
+                out.append((n, part.strip()))
+    return out
+
+
+def print_missing(pages: list[str], md: str) -> list[tuple[str, str, int]]:
+    """(normalised piece, original piece, page) for printed text the Markdown does not contain."""
+    flat = norm_text(md)
+    out, seen = [], set()
+    for n, text in enumerate(pages, start=1):
+        for key, raw in pieces(text):
+            if key in seen or key in flat:
+                continue
+            seen.add(key)
+            out.append((key, raw, n))
+    return out

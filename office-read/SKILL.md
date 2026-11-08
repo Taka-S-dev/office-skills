@@ -92,6 +92,20 @@ on a copy of the file to let Excel/LibreOffice fill them in.
      `<stem>_pages/document.pdf` (Word, else LibreOffice). Confirm each in `<stem>.checked`
      (format below).
    - Diagram syntax of mermaid / PlantUML blocks you added.
+   - Printed text: the document is printed to `<stem>_pages/document.pdf` (Word, else
+     LibreOffice; `--no-render` skips it) and every piece of each page's text must be in the
+     Markdown. This is the one reference that is not another converter, so it catches text that
+     office2md, pandoc and markitdown all drop. Page headers, footers and page numbers repeated
+     across pages are left out. The pages are also mapped to Markdown lines, and a spread of
+     pages plus the pages matched worst become visual checks `page<n>` (`--sample-pages`, default
+     5): open that page of the PDF beside those lines and compare the structure (heading levels,
+     table shape, what a box or a figure says).
+   Any listed item that is right as it is (text only in a page footer, a repeat the document
+   has by mistake) is closed with a line `accept <id> <reason>` in `<stem>.checked`; the review
+   prints each item's id. A line without a reason closes nothing, and accepted items are listed
+   with their reasons so the report can say what was waived. Each run appends its counts to
+   `<stem>.rounds.jsonl` and the review shows the runs so far, so a round that adds problems is
+   visible.
    Listed but not blocking: sentences found under a different heading than in a reference
    (moved, or a heading lost), equations not applied, bold phrases. READY means these checks
    passed within their scope, not that the Markdown means the same as the document; say so when
@@ -102,7 +116,11 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    has). Report the final status and those decisions. Figure paths in the Markdown are relative
    to its own folder, so the folder can be moved as a unit; a figure marked "placeholder image"
    is a 1-2 px stub whose meaning is only in its alt text and caption, and the reader should be
-   told so. Without pandoc the status says NO REFERENCE and the Markdown is still the best
+   told so. When subagents are available, a fresh one per document makes a stronger check
+   than rereading your own fix: give it the .md, the printed PDF and the review, ask for
+   converter-level defects (wrong heading levels, table shape, lost line structure, content
+   absent from the PDF), fix the Markdown or report what the converter gets wrong, rerun, and
+   repeat with a new reviewer until a round finds nothing new. Without pandoc the status says NO REFERENCE and the Markdown is still the best
    single conversion available; say that in the report.
 
    ```bash

@@ -19,6 +19,7 @@ Markdown is still produced.
 from __future__ import annotations
 
 import argparse
+import html
 import re
 import shutil
 import subprocess
@@ -28,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import office2md  # noqa: E402
+from office2md import radicals  # noqa: E402
 import diagram_lint  # noqa: E402
 import review_checks as rc  # noqa: E402
 import office_com  # noqa: E402
@@ -39,7 +41,8 @@ except AttributeError:
 
 # a number is a label only when a dot or a space follows it: "３類型に…" and "10件まで" keep their digits
 NUM_PREFIX = re.compile(r"^(第\s*[0-9０-９一二三四五六七八九十]+\s*[章節項部編]|[0-9０-９]+([.．][0-9０-９]+)*([.．]|(?=\s))"
-                        r"|[(（][0-9０-９]+[)）]|[①-⑳]|[a-zA-Z][.)](?=\s))\s*")
+                        r"|[(（][0-9０-９]+[)）]|[0-9０-９]{1,3}[)）]|[①-⑳]|[a-zA-Z][.)](?=\s)"
+                        r"|[ⅰ-ⅿ]{1,4}[)）]?|[ぁ-んァ-ヶ][)）.．]?(?=\s)|[(（][a-zA-Z]{1,4}[)）](?=\s))\s*")  # 1) ア ⅱ) (a)
 
 
 # -- running the engines ------------------------------------------------------------------
@@ -94,7 +97,13 @@ def run_markitdown(src: Path, out_md: Path) -> str | None:
 
 # a line that is only an internal link whose text ends in a page number: a TOC entry as pandoc
 # ("[はじめに [1](#section)](#section)") or markitdown ("[はじめに 1](#_Toc119672580)") write it
-TOC_LINE = re.compile(r"^[-*]?\s*\[[^\n]{0,300}?\s\[?[0-9]+\]?(\(#[^)]{0,300}\))?\]\(#[^)]{0,300}\)\s*$")
+# a table-of-contents entry: [見出し 12](#anchor), also with a roman page (ii), nested, or quoted
+TOC_LINE = re.compile(r"^(?:[-*>]\s{0,4}){0,3}\[[^\n]{0,300}?\s\[?(?:[0-9]+|[ivxlcIVXLC]{1,6})\]?"
+                      r"(\(#[^)]{0,300}\))?\]\(#[^)]{0,300}\)\s*$")
+# markitdown's form: 1.2　見出し [2](#anchor), the page as the only link at the end
+TOC_TAIL = re.compile(r"^[^\[\]\n]{1,300}?\s\[(?:[0-9]+|[ivxlcIVXLC]{1,6})\]\(#[^)]{0,300}\)\s*$")
+# the tags pandoc and markitdown write; anything else in angle brackets is text ("<Insert Name>")
+HTML_TAG = re.compile(r"</?(?:p|td|th|tr|br|em|strong|a|sup|sub|span|div|table|tbody|thead|tfoot|ul|ol|li|img|u|s|b|i|del|ins|code|colgroup|col|caption|blockquote|h[1-6]|figure|figcaption|pre|hr|mark|section|nav|small|dl|dt|dd)\b[^<>]{0,500}>", re.I)
 # characters scanned by the substring fallback per reference (a 118-page plan needs about 1e8)
 SUBSTRING_BUDGET = 2_000_000_000
 # Every pattern below runs on document text, so every repeat is bounded: a crafted line must not
@@ -117,17 +126,19 @@ def _strip_between(text: str, start: str, end: str) -> str:
     return "".join(out)
 
 
-def sentence_entries(md: str) -> list[tuple[str, str, str]]:
+def sentence_entries(md: str, known: set[str] | None = None) -> list[tuple[str, str, str]]:
     """(normalised sentence, original line, section) for every sentence, in order. Markdown
     syntax, numbering and whitespace are removed so that the same content written two ways
-    compares equal; the section is the normalised text of the nearest heading above."""
+    compares equal; the section is the normalised text of the nearest heading above. With known,
+    only headings in that set count: a heading one converter adds (a "（１）" line promoted to a
+    heading) then does not move every sentence under it to another section."""
     out: list[tuple[str, str, str]] = []
     section = ""
     for raw in md.splitlines():
         line = raw.strip()
         if not line or line.startswith(("|---", "```", "_Content extracted", "_Source:", "_(table of contents", ":::")):
             continue
-        if len(line) <= 1000 and TOC_LINE.match(line):
+        if len(line) <= 1000 and (TOC_LINE.match(line) or TOC_TAIL.match(line)):
             continue                                                 # a table-of-contents entry: [見出し 12](#anchor)
         line = _strip_between(line, "{--", "--}")                    # tracked deletions are not current text
         line = _strip_between(line, "{>>", "<<}")                    # inline comments
@@ -145,24 +156,32 @@ def sentence_entries(md: str) -> list[tuple[str, str, str]]:
         line = re.sub(r"\[\[\d{1,6}\]\]\(#[^)]{0,200}\)", "", line)  # markitdown footnote marks
         line = re.sub(r"\$\$?[^$]{1,400}\$\$?", "", line)           # equations are compared separately
         line = re.sub(r"\[figure:[^\]]{0,500}\]", "", line)          # office2md figure markers after a caption
-        line = re.sub(r"\[([^\]]{0,500})\]\{[^}]{0,200}\}", r"\1", line)  # pandoc spans [text]{.underline}
+        line = re.sub(r"\[([^\]]{0,3000})\]\{[^}]{0,200}\}", r"\1", line)  # pandoc spans [text]{.underline}
         line = re.sub(r"\{(?:width|height|#|\.)[^}]{0,200}\}?", "", line)  # pandoc attributes, also cut at line end
         line = re.sub(r"\s{0,20}\{[^}]{0,200}\}\s{0,20}$", "", line)  # pandoc heading attributes {.title}
         line = re.sub(r"<br\s{0,5}/?>", " ", line)
-        line = re.sub(r"&#?[0-9A-Za-z]{1,8};", " ", line)          # HTML character references (&#10;)
+        line = re.sub(r"<((?:https?|mailto|ftp):[^<>\s]{1,500})>", r"\1", line)   # autolinks <https://...>
+        line = HTML_TAG.sub(" ", line)                             # pandoc HTML tables: tags, not text
+        line = html.unescape(line)                                 # &lt;Insert Name&gt; is the text <Insert Name>
+        line = re.sub(r"\^([^^\s]{1,20})\^", r"\1", line)          # pandoc superscript ^注１）^
+        line = re.sub(r"(?<!~)~([^~\s]{1,20})~(?!~)", r"\1", line)  # and subscript ~(2)~, not ~~struck~~
+        # links and pictures read as their text, in table cells too (markitdown writes a framed
+        # box as a one-cell table, links included)
+        line = re.sub(r"!\[[^\]]{0,3000}\]\([^)]{0,3000}\)", "", line)
+        line = re.sub(r"\[([^\]]{0,500})\]\([^)]{0,2000}\)", r"\1", line)      # long SharePoint URLs too
         if line.startswith("|"):
-            cells = [re.sub(r"<[^<>]{1,500}>", " ", c).strip() for c in line.strip("|").split("|")]
+            cells = [HTML_TAG.sub(" ", c).strip() for c in line.strip("|").split("|")]
             for c in cells:
                 for s in split_sentences(c):
                     out.append((s, raw, section))
             continue
         if re.match(r"^#{1,6}\s", line):
-            section = "".join(split_sentences(re.sub(r"^#{1,6}\s*", "", line))) or section
+            head = "".join(split_sentences(re.sub(r"^#{1,6}\s*", "", line)))
+            if head and (known is None or head in known):
+                section = head
         line = re.sub(r"^#{1,6}\s*", "", line)
         line = re.sub(r"^(\s{0,8}[-*+]\s{1,8}|\s{0,8}\d{1,9}\.\s{1,8}|>\s{0,8}){1,10}", "", line)
-        line = re.sub(r"!\[[^\]]{0,500}\]\([^)]{0,500}\)", "", line)
-        line = re.sub(r"\[([^\]]{0,500})\]\([^)]{0,500}\)", r"\1", line)
-        line = re.sub(r"<[^<>]{1,500}>", "", line)
+        line = HTML_TAG.sub("", line)                               # a <placeholder> in the text stays
         for s in split_sentences(line):
             out.append((s, raw, section))
     return out
@@ -176,17 +195,45 @@ def sentences(md: str) -> dict[str, str]:
     return out
 
 
+_CIRCLED = re.compile("[①-⑳Ⅰ-ⅿ]")
+
+
+def _head_key(h: str) -> str:
+    """A heading compared without its number, spacing, quote style, digit width or emphasis
+    marks (as sentences are, but kept whole however short: "概要" is a heading)."""
+    h = radicals(NUM_PREFIX.sub("", h.strip())).translate(_WIDE_DIGITS)
+    h = re.sub(r"[“”\"‘’'*_`\\]", "", h)
+    return re.sub(r"[\s　]+", "", h) or h.strip()
+
+
+def _toc_entry(line: str, head_keys: set[str]) -> bool:
+    """A table-of-contents line without links: a heading of the primary and its page number."""
+    text = re.sub(r"[\s*]{0,5}(?:[A-Z]\.)?[0-9]{1,5}(?:[.-][0-9]{1,4}){0,3}[\s*]{0,5}$", "", line.strip()[:300])
+    text = re.sub(r"^[-*>\s]{0,6}", "", text)
+    return text != line.strip() and "".join(split_sentences(NUM_PREFIX.sub("", text))) in head_keys
+
+
+_WIDE_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
 def split_sentences(text: str) -> list[str]:
+    text = radicals(text)               # 地⽅ (radical) and 地方 are the same text to a reader
+    text = text.translate(_WIDE_DIGITS)  # 図１-1 and 図1-1: converters keep or fold the width
     text = text.replace("~~", "").replace("**", "").replace("__", "").replace("*", "").replace("`", "").replace("\\", "")
     # leaders: Word's "……" comes out of pandoc as "......", which would also split the sentence
     text = re.sub(r"[…‥]+|\.{2,}", "", text)
     text = re.sub(r"[“”\"‘’']", "", text)          # pandoc turns curly quotes into straight ones
+    # list numbers and bullets inside a cell: "1. by a party" in one converter, "(i) by a party" or
+    # "* + item" in another; both sides drop them
+    text = re.sub(r"(?:(?<=\s)|^)(?:[0-9]{1,3}[.)]|[(（][0-9a-zA-Zⅰ-ⅿ]{1,4}[)）]|[+*•-]|[ぁ-んァ-ヶ][)）.．]?)(?=\s)",
+                  " ", text)                           # ア / い labels too, as NUM_PREFIX drops them at a line start
     pieces = re.split(r"(?<=[。．.!?！？])\s*", text)
     out = []
     for p in pieces:
         p = NUM_PREFIX.sub("", p.strip())
         p = re.sub(r"[\s　]+", "", p)
-        p = re.sub(r"[「」『』（）()\[\]【】、，,.。:：;；・\-ー–—]", "", p)
+        p = re.sub(r"[「」『』（）()\[\]【】、，,.。:：;；・\-ー–—‐‑−－•<>]", "", p)   # • bullets in cells
+        p = re.sub(r"_{2,}|[☐☑☒✓✔]", "", p)           # fill-in blanks and checkboxes ([ ] in a reference)
         if len(p) >= 4:
             out.append(p)
     return out
@@ -217,8 +264,14 @@ def tables(md: str) -> list[int]:
     """Rows with content per pipe table, in order. Rows, not cells: converters write merged cells
     differently (repeated, blank or dropped), but a row lost or split is a real difference; an
     all-blank row is the placeholder header markitdown adds and is not counted, and so is a row
-    whose only content repeats the cell above (a label merged down a blank form section)."""
-    counts, cur, in_table, prev = [], 0, False, []
+    whose only content repeats the cell above (a label merged down a blank form section).
+    Laid out the way office2md writes them, so the counts compare: a one-column table (a framed
+    box, which office2md writes as a quote) is not counted, nor a first row holding one text
+    across every column (a title, which office2md writes above the table), and two tables with the
+    same columns and only blank lines between are one table broken across a page, as office2md
+    joins them."""
+    counts, cur, in_table, prev, width, first = [], 0, False, [], 0, True
+    cols, last_cols, gap_text = 0, -1, True
     for line in md.splitlines() + [""]:
         s = line.strip()
         if s.startswith("|"):
@@ -226,18 +279,39 @@ def tables(md: str) -> list[int]:
             if re.match(r"^\|?\s*:?-{2,}", s):
                 continue
             cells = [c.strip() for c in s.strip("|").split("|")]
+            cols = cols or len(cells)
+            width = max(width, sum(1 for c in cells if c))
+            # markitdown writes the spanning title once and leaves the merged cells blank
+            title = first and len(cells) > 1 and cells[0] and (
+                len(set(cells)) == 1 or (len(cells) >= 3 and not any(cells[1:])))
+            first = first and not any(cells)          # markitdown's blank header comes before the title
             new = [c for i, c in enumerate(cells) if c and (i >= len(prev) or c != prev[i])]
-            if new:
+            if new and not title:
                 cur += 1
             prev = cells
         elif in_table:
-            counts.append(cur)
-            cur, in_table, prev = 0, False, []
+            if width > 1:
+                if not gap_text and cols == last_cols and counts:
+                    counts[-1] += cur
+                else:
+                    counts.append(cur)
+                last_cols = cols
+            cur, in_table, prev, width, first, cols, gap_text = 0, False, [], 0, True, 0, False
+        elif s:
+            gap_text = True
     return counts
 
 
 def html_tables(md: str) -> int:
-    return len(re.findall(r"<table[\s>]", md))
+    """HTML tables (pandoc writes merged-cell tables so) with more than one column; a one-column
+    one is a framed box, which office2md writes as a quote, as tables() does not count."""
+    n = 0
+    for part in md.split("<table")[1:]:
+        body = part.split("</table>", 1)[0]
+        rows = body.split("<tr")[1:]
+        if any(len(re.findall(r"<t[dh][\s>]", r)) > 1 for r in rows):
+            n += 1
+    return n
 
 
 def headings(md: str) -> list[str]:
@@ -272,6 +346,7 @@ def apply_safe(primary: str, refs: dict[str, str]) -> tuple[str, dict[str, int]]
     lines = primary.split("\n")
     stats = {"equations": 0, "bold": 0, "links": 0}
     body_idx = [i for i, l in enumerate(lines) if l.strip() and not PROTECTED.match(l.strip())]
+    head_keys = {_head_key(h) for h in headings(primary)}
 
     def occurrences(phrase: str) -> list[int]:
         return [i for i in body_idx if phrase in lines[i]]
@@ -295,11 +370,19 @@ def apply_safe(primary: str, refs: dict[str, str]) -> tuple[str, dict[str, int]]
             if len(hits) == 1 and lines[hits[0]].count(phrase) == 1:
                 lines[hits[0]] = lines[hits[0]].replace(phrase, f"[{phrase}]({url})")
                 stats["links"] += 1
-        # bold: a phrase the reference emphasises, present exactly once in the primary and not yet marked
+        # bold: a phrase the reference emphasises, present exactly once in the primary and not yet marked.
+        # Not a heading's text (the reference bolds a heading; the primary's one plain copy is then an
+        # index line or a cross-reference), and a line wholly bold in the reference only onto a line
+        # that is that phrase alone
+        whole = {re.sub(r"^\W{0,6}|\W{0,6}$", "", m) for m in re.findall(r"(?m)^\s*\*\*([^*\n]{2,80})\*\*\s*$", text)}
         for phrase in dict.fromkeys(emphasis(text)):
             if len(phrase) < 2 or re.fullmatch(r"[\d\s.,%]+", phrase) or "`" in phrase or "$" in phrase:
                 continue
+            if _head_key(phrase) in head_keys or not NUM_PREFIX.sub("", phrase.strip()).strip():
+                continue                     # a heading's text, or only a number label such as （８）
             hits = occurrences(phrase)
+            if hits and phrase.strip() in whole and lines[hits[0]].strip().strip("*").strip() != phrase.strip():
+                continue
             if len(hits) == 1 and lines[hits[0]].count(phrase) == 1 and f"**{phrase}**" not in lines[hits[0]] \
                     and "](" not in lines[hits[0]]:
                 lines[hits[0]] = lines[hits[0]].replace(phrase, f"**{phrase}**")
@@ -336,12 +419,45 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
     # the same sentences run together: a reference sentence the primary splits over two lines
     # (a text box, a wrapped cell) is found across the join
     p_flat = "".join(s for s, _, _ in p_entries)
+    p_flat_bare = _CIRCLED.sub("", p_flat)
     p_count = Counter(s for s, _, _ in p_entries)
     p_section = {s: sec for s, _, sec in p_entries}
     # the change list and comment table office2md appends are not tables of the document
     body = re.split(r"(?m)^## (?:Tracked changes|Comments)$", primary, maxsplit=1)[0]
     p_links, p_emph, p_eq, p_tables = links(primary), emphasis(primary), equations(primary), tables(body)
     p_heads = [h for h in headings(primary) if h not in (src.name, "Notes", "Comments")]
+    p_head_keys = {"".join(split_sentences(NUM_PREFIX.sub("", h))) for h in p_heads} - {""}
+    acc = rc.accepted(checks.get("checked_lines", []))
+    taken: list[tuple[str, str, str]] = []        # (id, reason, what) for items accepted with a reason
+
+    def keep(kind: str, key: str, what: str) -> tuple[bool, str]:
+        """(still open, id). An item accepted in the .checked file with a reason is set aside."""
+        iid = rc.item_id(kind, key)
+        if iid in acc:
+            taken.append((iid, acc[iid], what))
+            return False, iid
+        return True, iid
+
+    printed = checks.get("print_pages") or []
+    if printed:
+        found = [(k, raw, page) for k, raw, page in rc.print_missing(printed, p_text)
+                 if keep("print", k, f"page {page}: {raw[:100]}")[0]]
+        out.append(f"## Text Word prints that is not in the primary ({len(found)})")
+        out.append("")
+        if found:
+            out.append("Pieces of the printed page (the document rendered by Word, running headers and page "
+                       "numbers removed) that the Markdown does not contain. This check owes nothing to any "
+                       "converter, so text all of them drop (shapes, fields, odd layouts) shows here. Open the "
+                       "page, and add the text or accept the item with a reason.")
+            out.append("")
+            for k, raw, page in found[:150]:
+                out.append(f"- `{rc.item_id('print', k)}` page {page}: {esc(raw)[:160]}")
+            if len(found) > 150:
+                out.append(f"- … {len(found) - 150} more")
+            counts["printed"] = len(found)
+        else:
+            out.append("None.")
+        out.append("")
 
     for name, text in refs.items():
         r_sent = sentences(text)
@@ -356,23 +472,35 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
             # crafted document cannot make the review run for hours; what is left is reported
             if budget <= 0:
                 unchecked += 1
-                missing.append(r_sent[s])
+                missing.append((s, r_sent[s]))
                 continue
-            budget -= len(p_blob) + len(p_flat)
-            if s not in p_blob and s not in p_flat:
-                missing.append(r_sent[s])
+            budget -= len(p_blob) + 2 * len(p_flat)
+            # a circled number starts a line in the primary (dropped there as numbering) but sits
+            # mid-sentence in a reference that ran a framed box into one cell
+            if s not in p_blob and s not in p_flat and _CIRCLED.sub("", s) not in p_flat_bare:
+                missing.append((s, r_sent[s]))
         if unchecked:
             counts["unchecked"] = counts.get("unchecked", 0) + unchecked
         # ignore reference lines that are just the TOC the primary collapsed on purpose
-        missing = [m for m in missing if not re.search(r"(?:\.{3,40}|…{1,40})\s{0,5}\d{1,5}\s{0,5}$", m[-200:])]
+        # leaders and a page ("....A.3-4"), or a heading of the primary followed by its page number
+        missing = [(k, m) for k, m in missing
+                   if not re.search(r"(?:\.{3,40}|…{1,40})\s{0,5}(?:[A-Z]\.)?[\d.-]{1,12}[\s*]{0,5}$", m[-200:])
+                   and not _toc_entry(m, p_head_keys)]
+        open_items = []
+        for k, m in missing:
+            still, iid = keep("missing", k, m.strip()[:120])
+            if still:
+                open_items.append((iid, m))
+        missing = open_items
         out.append(f"## Content in {name} not found in the primary ({len(missing)})")
         out.append("")
         if missing:
             out.append("Each line is as the reference wrote it. Search the primary for the words; if the content "
-                       "is truly absent, add it where it belongs.")
+                       "is truly absent, add it where it belongs. If the difference is intentional, accept it with "
+                       "a reason (see Done when).")
             out.append("")
-            for m in missing[:150]:
-                out.append(f"- {esc(m.strip())[:200]}")
+            for iid, m in missing[:150]:
+                out.append(f"- `{iid}` {esc(m.strip())[:200]}")
             if len(missing) > 150:
                 out.append(f"- … {len(missing) - 150} more")
             n_items += len(missing)
@@ -384,18 +512,21 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
         # the same sentence fewer times in the primary: one of the repeats was lost
         r_entries = sentence_entries(text)
         r_count = Counter(s for s, _, _ in r_entries)
-        fewer = [(r_sent[s], n, p_count[s]) for s, n in r_count.items()
-                 if p_count[s] and p_count[s] < n and len(s) >= 6]
+        fewer = [(r_sent[s], n, p_count[s], iid) for s, n in r_count.items()
+                 if p_count[s] and p_count[s] < n and len(s) >= 6
+                 for still, iid in [keep("fewer", s, r_sent[s].strip()[:120])] if still]
         if fewer:
             out += [f"## Repeated content found fewer times in the primary than in {name} ({len(fewer)})", "",
                     "A specification often repeats a sentence on purpose (one per case or per section). Find where "
                     "the reference has the other occurrence and add it to the primary.", ""]
-            out += [f"- {esc(m.strip())[:200]} ({n} times in {name}, {have} in the primary)" for m, n, have in fewer[:80]]
+            out += [f"- `{iid}` {esc(m.strip())[:200]} ({n} times in {name}, {have} in the primary)"
+                    for m, n, have, iid in fewer[:80]]
             out.append("")
             n_items += len(fewer)
             counts["fewer"] += len(fewer)
         # a sentence present once in each, under a different heading: moved, or a heading lost
         r_section = {s: sec for s, _, sec in r_entries}
+        p_section = {s: sec for s, _, sec in sentence_entries(p_text, known=set(r_section.values()))}
         moved = [(r_sent[s], r_section[s], p_section[s]) for s in r_count
                  if r_count[s] == 1 and p_count[s] == 1 and r_section[s] and p_section[s]
                  and r_section[s] != p_section[s]]
@@ -421,7 +552,7 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
         out.append("")
 
         r_links = links(text)
-        new_links = {u: t for u, t in r_links.items() if u not in p_links}
+        new_links = {u: t for u, t in r_links.items() if u not in p_links and keep("link", u, u)[0]}
         if new_links:
             out.append(f"## Links in {name} missing from the primary ({len(new_links)})")
             out.append("")
@@ -463,8 +594,8 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
         if html_tables(text) and len(r_tables) + html_tables(text) == len(p_tables):
             # the reference wrote tables with merged cells as HTML: rows of those cannot be compared
             counts["tables_skipped"] = counts.get("tables_skipped", 0) + html_tables(text)
-        elif r_tables != p_tables:
-            out.append(f"## Table shapes differ from {name}")
+        elif r_tables != p_tables and keep("tables", f"{name}:{r_tables}:{p_tables}", f"table shapes against {name}")[0]:
+            out.append(f"## Table shapes differ from {name} (`{rc.item_id('tables', f'{name}:{r_tables}:{p_tables}')}`)")
             out.append("")
             out.append(f"Primary: {len(p_tables)} table(s) with row counts {p_tables[:30]}; {name}: "
                        f"{len(r_tables)} with {r_tables[:30]}. A different count means a row lost, split or "
@@ -474,14 +605,15 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
             counts["tables"] += 1
 
         r_heads = headings(text)
-        strip = lambda h: NUM_PREFIX.sub("", h).strip()  # noqa: E731
-        only_ref = [h for h in r_heads if strip(h) not in {strip(x) for x in p_heads}]
+        strip = _head_key
+        only_ref = [h for h in r_heads if strip(h) not in {strip(x) for x in p_heads}
+                    and keep("heading", strip(h), h)[0]]
         only_pri = [h for h in p_heads if strip(h) not in {strip(x) for x in r_heads}]
         if only_ref or only_pri:
             out.append(f"## Headings that differ from {name}")
             out.append("")
             for h in only_ref[:40]:
-                out.append(f"- only in {name}: {esc(h)}")
+                out.append(f"- `{rc.item_id('heading', strip(h))}` only in {name}: {esc(h)}")
             for h in only_pri[:40]:
                 out.append(f"- only in primary: {esc(h)}")
             out.append("")
@@ -499,14 +631,21 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
     vis_total, vis_done, vis_stale = checks.get("total", 0), checks.get("done", 0), checks.get("stale", 0)
     if checks.get("visual_lines"):
         out += checks["visual_lines"] + [""]
+    if taken:
+        out += [f"## Accepted with a reason ({len(taken)})", ""]
+        out += [f"- `{iid}` {esc(what)} — {esc(reason)}" for iid, reason, what in taken[:200]]
+        out.append("")
     out.append("## Done when")
     out.append("")
-    out.append("Rerun this script after editing. The lists above should contain only differences you decided to keep.")
+    out.append(f"Rerun this script after each round of edits. Fix what is wrong in the Markdown; for a difference "
+               f"that is right as it is, add a line `accept <id> <reason>` to {checks.get('checked_name', '<stem>.checked')} "
+               "(the reason is required and is listed above on the next run). Stop when the status is READY.")
 
     # status block at the top: the one place to look to know whether this is finished
     lint_n = sum(len(e) for _, _, e in lint)
     content_ok = counts["missing"] + counts["fewer"] + counts["links"] + counts["headings"] == 0
     blocking = (counts["missing"] + counts["fewer"] + counts["links"] + counts["headings"] + lint_n
+                + counts.get("printed", 0)
                 + (vis_total - vis_done) + (1 if src_state == "differs" else 0))
     verdict = "READY" if blocking == 0 and counts["tables"] == 0 else "NEEDS REVIEW"
     status = [f"**Status: {verdict}**", ""]
@@ -526,6 +665,10 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
                            + (f"; {counts['unchecked']} of those sentences were not searched as part of a longer "
                               "sentence because the document is very large, so some may be present"
                               if counts.get("unchecked") else "") + "."),
+               status_line((counts.get("printed", 0) == 0) if printed else None,
+                           f"Printed text: {counts.get('printed', 0)} piece(s) of the page as Word prints it not in "
+                           "the primary" if printed else "Printed text: not compared (no Word or LibreOffice to "
+                           "print the document, or --no-render)."),
                status_line(counts["tables"] == 0, f"Table shapes: {counts['tables']} difference(s) in row counts"
                            + (f"; {counts['tables_skipped']} table(s) a reference wrote as HTML were not compared"
                               if counts.get("tables_skipped") else "") + "."),
@@ -540,6 +683,13 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
                "and every figure and object was looked at. It does not prove the Markdown means the same as the "
                "document: content every converter drops (text inside pictures) is covered only by the visual checks.",
                ""]
+    if checks.get("rounds_path"):
+        rows = rc.record_round(checks["rounds_path"], {
+            "status": verdict, "missing": counts["missing"], "printed": counts.get("printed", 0),
+            "fewer": counts["fewer"], "tables": counts["tables"],
+            "visual open": vis_total - vis_done, "accepted": len(taken)})
+        status += rc.rounds_table(rows, ["status", "missing", "printed", "fewer", "tables", "visual open",
+                                         "accepted"])
     out[status_at:status_at] = status
     return "\n".join(out) + "\n", blocking + counts["tables"]     # the count printed = what blocks READY
 
@@ -867,11 +1017,11 @@ def word_main(src: Path, a) -> int:
         primary, applied = apply_safe(primary, refs)
         primary_path.write_text(primary, encoding="utf-8")
 
-    visuals = rc.docx_visuals(data) + rc.docx_census(src, data)
+    # the document as Word prints it: a reference independent of every converter, and the pages
+    # an agent compares with the Markdown by eye
     page_pdf = ""
     render_dir = out_dir / f"{stem}_pages"
-    needs_page = any(not vid.startswith("figure") for vid, _, _ in visuals)
-    if needs_page and not a.no_render:
+    if not a.no_render:
         if not a.fresh and rc.renders_current(render_dir, src) and (render_dir / "document.pdf").exists():
             page_pdf = f"{render_dir.name}/document.pdf"
         else:
@@ -881,13 +1031,19 @@ def word_main(src: Path, a) -> int:
             if render_docx(src, render_dir):
                 rc.stamp_renders(render_dir, src)
                 page_pdf = f"{render_dir.name}/document.pdf"
-        if page_pdf:
-            visuals = rc.docx_visuals(data, page_pdf) + rc.docx_census(src, data)
+    visuals = rc.docx_visuals(data, page_pdf) + rc.docx_census(src, data)
+    pages: list[str] = []
+    if page_pdf:
+        pages = rc.printed_pages(out_dir / page_pdf)
+        if pages:
+            spans = rc.page_spans(primary, pages)
+            visuals += rc.page_checks(spans, page_pdf, primary_path.name, a.sample_pages)
     checked_path = out_dir / f"{stem}.checked"
-    vis_lines, done, stale = visual_section(visuals, rc.read_checked(checked_path), checked_path.name,
-                                            "matches the page")
+    checked_lines = rc.read_checked(checked_path)
+    vis_lines, done, stale = visual_section(visuals, checked_lines, checked_path.name, "matches the page")
     checks = {"visual_lines": vis_lines, "done": done, "total": len(visuals), "stale": stale,
-              "checked_name": checked_path.name, "page_pdf": page_pdf,
+              "checked_name": checked_path.name, "page_pdf": page_pdf, "checked_lines": checked_lines,
+              "print_pages": pages, "rounds_path": out_dir / f"{stem}.rounds.jsonl",
               "source": (src_state, md_digest, now_digest, primary_path.name)}
     text, n = review(primary, refs, src, applied, checks)
     review_path = out_dir / f"{stem}.review.md"
@@ -915,6 +1071,8 @@ def main(argv=None) -> int:
                     help="xlsx: notation for reconstructed diagrams")
     ap.add_argument("--render-diagrams", action="store_true",
                     help="also render each mermaid/PlantUML block with an installed tool (PlantUML runs sandboxed)")
+    ap.add_argument("--sample-pages", type=int, default=5, metavar="N",
+                    help="docx: pages spread through the document to compare by eye (plus the worst-matching ones)")
     ap.add_argument("--no-render", action="store_true",
                     help="xlsx: do not render sheets to PDF (visual checks then have nothing to compare against)")
     a = ap.parse_args(argv)

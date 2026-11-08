@@ -96,7 +96,7 @@ def main() -> int:
             "assert same('RFI【あ】......情報提供依頼書のこと。', 'RFI【あ】……情報提供依頼書のこと。')",
             "assert m.sentences('[はじめに [1](#section)](#section)') == {}",
             "assert m.sentences('[第１章 概要 2](#_Toc11)') == {}",
-            "assert '３類型に分類する' in m.sentences('1. ３類型に分類する。') or any('３類型' in s for s in m.sentences('1. ３類型に分類する。'))",
+            "assert '3類型に分類する' in m.sentences('1. ３類型に分類する。')",  # the list number goes, the ３ stays (width folded)
             "assert same('| 全ての団体で、<br>必須機能である |', '全ての団体で、必須機能である')",
             "assert same('[RFI【あ】]{.underline}の説明文です。', 'RFI【あ】の説明文です。')",
             "assert m.tables('|  |  |\\n| --- | --- |\\n| a | b |\\n| c | d |\\n') == [2]",
@@ -414,6 +414,35 @@ def main() -> int:
               "> 留意事項  \n> 箱の中の二行目" in o and "\n申請日\n\n|  |  |\n|---|---|\n| 氏名 | 山田 |" in o, o)
         check("docx: text box in a cell marked, radical form read as the ideograph, notes numbered as displayed",
               "[text box] 枠内の注記" in o and "地方の制度[^1][^2]" in o and "[^2]: 二番目の注" in o, o)
+        code = "\n".join([
+            "import review_checks as rc, tempfile, os",
+            "from pathlib import Path",
+            "pages = ['見出し\\n本文の一文目です 第二の項目名\\n1', '見出し\\n脚注つきの文です2\\n2', '見出し\\nもう一つの行です\\n3']",
+            "md = '本文の一文目です\\n\\n第二の項目名\\n\\n脚注つきの文です[^2]\\n'",
+            "miss = rc.print_missing(pages, md)",
+            "assert [m[1] for m in miss] == ['もう一つの行です'] and miss[0][2] == 3, miss",
+            "spans = rc.page_spans(md, pages)",
+            "assert spans[0][:2] == (1, 1) and spans[1][:3] == (2, 5, 5) and spans[2][1] is None, spans",
+            "iid = rc.item_id('missing', 'もう一つの行です')",
+            "acc = rc.accepted([f'accept {iid} printed only in the page footer', 'accept missing:00000000'])",
+            "assert acc == {iid: 'printed only in the page footer'}, acc",
+            "p = Path(tempfile.mkdtemp()) / 'x.rounds.jsonl'",
+            "rc.record_round(p, {'missing': 2}); rows = rc.record_round(p, {'missing': 0})",
+            "assert [r['round'] for r in rows] == [1, 2] and rc.rounds_table(rows, ['missing'])[-2] == '| 2 | 0 |'",
+            "secs = rc.sheet_sections('## Sheet: CUI Overlay Overview\\na\\n## Sheet: CUI Overlay\\nb', ['CUI Overlay'])",
+            "assert secs['CUI Overlay'].endswith('\\nb'), secs",
+            "import md_crosscheck as m",
+            "assert set(m.sentences('<p>&lt;Insert CSP Name&gt;</p>')) == set(m.sentences('<Insert CSP Name>'))",
+            "assert set(m.sentences('図 １‑1　適用対象の範囲')) == set(m.sentences('図 1-1　適用対象の範囲'))",
+            "assert m.TOC_LINE.match('> [改定履歴 [ii](#a)](#a)')",
+            "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",
+            "                        {'r': '**（１）管理項目について**\\n\\n**大切な語**を含む文\\n'})",
+            "assert '**（１）' not in fixed and '**大切な語**を含む文' in fixed, fixed",  # a heading's bold stays off its index copy
+            "print('AGENT LOOP OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("review loop: printed text missing by page, page spans, accept needs a reason, rounds recorded",
+              "AGENT LOOP OK" in o.stdout, o.stdout + o.stderr)
         code = "\n".join([
             "import xlsx_drawing as xd",
             "def sh(name, box, text='', prst='rect', **k): return {'kind': 'shape', 'name': name, 'box': box, 'text': text, 'prst': prst, **k}",
