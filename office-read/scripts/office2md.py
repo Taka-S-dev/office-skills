@@ -189,6 +189,34 @@ def radicals(text: str) -> str:
     return "".join(unicodedata.normalize("NFKC", ch) if "\u2e80" <= ch <= "\u2fdf" else ch for ch in text)
 
 
+def metafile_png(blob: bytes, trim: bool = False) -> bytes | None:
+    """An EMF or WMF picture drawn as PNG, the form a Markdown viewer shows (most show neither
+    metafile). Pillow draws metafiles on Windows only: elsewhere, or when drawing fails, None.
+    trim cuts the white margin around what is drawn, for a drawing taken from a page."""
+    try:
+        from PIL import Image, ImageChops
+        im = Image.open(io.BytesIO(blob))
+        im.load(dpi=144)
+        im = im.convert("RGB")
+        if trim:
+            box = ImageChops.difference(im, Image.new("RGB", im.size, "white")).getbbox()
+            if box:
+                pad = 8
+                im = im.crop((max(0, box[0] - pad), max(0, box[1] - pad),
+                              min(im.width, box[2] + pad), min(im.height, box[3] + pad)))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001 - Pillow raises many kinds; any failure keeps the metafile
+        return None
+
+
+def md_link_target(path: str) -> str:
+    """A path as a Markdown link target: in angle brackets when it holds a space or parenthesis."""
+    path = re.sub(r"[<>\x00-\x1f]", "", path)
+    return f"<{path}>" if re.search(r"[\s()]", path) else path
+
+
 def render_object(o: dict) -> list[str]:
     """A SmartArt, chart or embedded object as a quoted block (Word and PowerPoint)."""
     name = md_escape(o.get("name") or "")
@@ -1263,8 +1291,12 @@ class DocxHandler(Handler):
         "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
         "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
         "o": "urn:schemas-microsoft-com:office:office",
+        "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+        "wpc": "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+        "wpg": "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
     }
     OBJ_MARK = chr(0xE000) + "obj:"      # stands in for a SmartArt / chart / embedded object in the text-box list
+    DRAW_MARK = chr(0xE000) + "draw:"    # stands in for a drawing made of shapes (a canvas, a group, lines)
 
     def _q(self, prefix: str, name: str) -> str:
         return "{%s}%s" % (self._NS[prefix], name)
@@ -1281,6 +1313,7 @@ class DocxHandler(Handler):
         self._note_count: dict[str, int] = {}
         self._images: list[dict] = []
         self._objects: list[dict] = []
+        self._drawings: list[dict] = []
         self._changes: dict[str, dict] = {}
         self._comment_cache: dict[str, dict] | None = None
         return doc
@@ -1503,33 +1536,177 @@ class DocxHandler(Handler):
             ext = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/bmp": "bmp",
                    "image/tiff": "tif", "image/x-emf": "emf", "image/x-wmf": "wmf",
                    "image/svg+xml": "svg", "image/webp": "webp"}.get(ctype)
+            converted = ""
             if out_dir and ext:
-                out_dir = Path(out_dir)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                n = len(self._images) + 1
-                for attempt in range(1000):
-                    target = out_dir / f"figure-{n:03d}{'' if attempt == 0 else f'-{attempt}'}.{ext}"
-                    try:
-                        with open(target, "xb") as f:
-                            f.write(rel.target_part.blob)
-                        break
-                    except FileExistsError:
-                        continue
-                # path as the Markdown's reader will resolve it: relative to the .md's folder when
-                # known (images_base), always with forward slashes
-                base = getattr(self.opts, "images_base", None)
-                try:
-                    saved = target.resolve().relative_to(Path(base).resolve()).as_posix() if base else str(target)
-                except ValueError:
-                    saved = str(target)
+                blob = rel.target_part.blob
+                if ext in ("emf", "wmf"):
+                    png = metafile_png(blob)
+                    if png:
+                        blob, converted, ext = png, ext, "png"
+                saved = self._save_picture(blob, ext, f"figure-{len(self._images) + 1:03d}")
             dims = self._image_dims(rel.target_part.blob) if not rel.is_external else None
         else:
             dims = None
+            converted = ""
         info = {"file": fname, "name": name, "alt": descr, "saved": saved,
                 "size": f"{dims[0]}x{dims[1]}" if dims else "",
                 "placeholder": bool(dims and dims[0] <= 2 and dims[1] <= 2)}
+        if converted:
+            info["converted_from"] = converted
         self._images.append(info)
         return info
+
+    def _save_picture(self, blob: bytes, ext: str, stem: str) -> str:
+        """Write a picture into --images under a name this script chooses (the package's own name
+        is untrusted) and return its path as the Markdown's reader resolves it: relative to the
+        .md's folder when known (images_base), always with forward slashes."""
+        out_dir = Path(self.opts.images)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for attempt in range(1000):
+            target = out_dir / f"{stem}{'' if attempt == 0 else f'-{attempt}'}.{ext}"
+            try:
+                with open(target, "xb") as f:
+                    f.write(blob)
+                break
+            except FileExistsError:
+                continue
+        base = getattr(self.opts, "images_base", None)
+        try:
+            return target.resolve().relative_to(Path(base).resolve()).as_posix() if base else target.as_posix()
+        except ValueError:
+            return target.as_posix()
+
+    # -- drawings made of shapes ---------------------------------------------------------------
+
+    _LINE_GEOM = re.compile(r"^line(Inv)?$|Connector")      # whole names: flowChartOnlineStorage is a shape
+
+    def _drawing_parts(self, node):
+        """The elements of a drawing, not going into the text of its boxes: a shape typed inside a
+        text box belongs to that box's own paragraphs, which are walked on their own."""
+        stop = self._q("w", "txbxContent")
+        stack = list(node)
+        while stack:
+            el = stack.pop()
+            if el.tag == stop:
+                continue
+            yield el
+            stack.extend(el)
+
+    def _drawing_shapes(self, node) -> dict | None:
+        """A drawing made of shapes rather than a picture: a canvas, a group, lines or connectors,
+        or a shape with no text (a box, an arrow, a mark). A lone shape holding text is a text box
+        and is read as one: "figure" is False then, and stays False unless another drawing in the
+        same paragraph makes the whole a figure. None when there are no shapes at all."""
+        q = self._q
+        parts = list(self._drawing_parts(node))
+        canvas = any(el.tag == q("wpc", "wpc") for el in parts)
+        group = any(el.tag == q("wpg", "wgp") for el in parts)
+        shapes = lines = bare = 0
+        for sp in (el for el in parts if el.tag == q("wps", "wsp")):
+            geom = sp.find(".//" + q("a", "prstGeom"))
+            if sp.find(q("wps", "cNvCnPr")) is not None or self._LINE_GEOM.search(geom.get("prst", "") if geom is not None else ""):
+                lines += 1
+            else:
+                shapes += 1
+                bare += sp.find(q("wps", "txbx")) is None
+        if not (canvas or group or shapes or lines):
+            # VML, in documents saved by older Word (no DrawingML choice beside it)
+            v = "{%s}" % self._NS["v"]
+            for el in parts:
+                tag = el.tag if isinstance(el.tag, str) else ""
+                if not tag.startswith(v) or el.get(q("o", "hr")) in ("t", "true"):
+                    continue            # o:hr: the horizontal rule older Word wrote, not a figure
+                local = tag[len(v):]
+                if local == "group":
+                    group = True
+                elif local in ("line", "polyline", "arc", "curve") or el.get(q("o", "connectortype")):
+                    lines += 1
+                elif local in ("rect", "roundrect", "oval", "shape") and el.find(q("v", "imagedata")) is None:
+                    shapes += 1
+                    bare += el.find(q("v", "textbox")) is None
+        if not (canvas or group or shapes or lines):
+            return None
+        return {"canvas": canvas, "group": group, "shapes": shapes, "lines": lines,
+                "figure": bool(canvas or group or lines or bare)}
+
+    def _drawing_text(self, d: dict) -> str:
+        what = ["canvas"] * d["canvas"] + ["group"] * (d["group"] and not d["canvas"])
+        if d["shapes"]:
+            what.append(f"{d['shapes']} shape{'s' * (d['shapes'] != 1)}")
+        if d["lines"]:
+            what.append(f"{d['lines']} line{'s' * (d['lines'] != 1)} or connector{'s' * (d['lines'] != 1)}")
+        return "drawing: " + ", ".join(what)
+
+    def _drawing_line(self, marker: str) -> str:
+        """A drawing in a table cell or a text box: named, not rendered."""
+        return f"[{self._drawing_text(self._drawings[int(marker[len(self.DRAW_MARK):])])}]"
+
+    def _render_drawings(self, blocks: list[dict]) -> str:
+        """Each drawing block as a PNG taken from Word's own rendering of its paragraph, so the
+        picture is what Word shows (shapes, lines, text and their positions), not a guess from the
+        shapes' XML. The paragraphs carry bookmarks named o2m_d<n>; the document goes to a
+        temporary copy, Word draws each bookmarked paragraph as a metafile, and Pillow turns it
+        into a PNG with the white margin cut. Returns why nothing was rendered, or ''."""
+        todo = [b for b in blocks if b["kind"] == "drawing"]
+        if not todo:
+            return ""
+        if sys.platform != "win32":
+            return "drawings are rendered through Word, which is not available here"
+        import subprocess
+        import tempfile
+        import office_com
+        ps = """
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Word.Application
+try {
+  $app.Visible = $false; $app.DisplayAlerts = 0; $app.AutomationSecurity = 3
+  $doc = $app.Documents.Open($env:OFFICE_SRC, $false, $true, $false, '_', '_', $false, '_', '_', 0, 65001, $false, $false, 0, $true)
+  foreach ($n in $env:OFFICE_NAMES.Split(';')) {
+    # one drawing Word cannot draw must not cost the others
+    try {
+      if ($doc.Bookmarks.Exists($n)) {
+        $bits = [byte[]]$doc.Bookmarks.Item($n).Range.Paragraphs(1).Range.EnhMetaFileBits
+        if ($bits) { [IO.File]::WriteAllBytes((Join-Path $env:OFFICE_OUT "$n.emf"), $bits) }
+      }
+    } catch { }
+  }
+  $doc.Close(0)
+  Write-Output 'OK'
+} finally {
+  $app.Quit()
+  foreach ($o in @($doc, $app)) { if ($o) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($o) } }
+  [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+}
+"""
+        # Word may hold the copy a moment after it quits: a folder left behind must not fail the run
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            src = Path(td) / "drawings.docx"
+            self._doc.save(str(src))
+            try:
+                office_com.run_script(ps, "WINWORD", {"OFFICE_SRC": str(src), "OFFICE_OUT": td,
+                                                      "OFFICE_NAMES": ";".join(b["bookmark"] for b in todo)})
+            except (subprocess.TimeoutExpired, OSError) as e:
+                return f"Word could not be started ({type(e).__name__})"
+            # what Word wrote is used even when it stopped part way
+            for n, b in enumerate(todo, 1):
+                emf = Path(td) / f"{b['bookmark']}.emf"
+                png = metafile_png(emf.read_bytes(), trim=True) if emf.exists() else None
+                if png:
+                    b["saved"] = self._save_picture(png, "png", f"drawing-{n:03d}")
+        if not any(b.get("saved") for b in todo):
+            return "Word could not render them"
+        return "" if all(b.get("saved") for b in todo) else "Word could not render these ones"
+
+    def _bookmark(self, p, idx: int) -> str:
+        """A bookmark around a paragraph's content, in memory only, so Word can find it again."""
+        W = lambda n: self._q("w", n)  # noqa: E731
+        name, bid = f"o2m_d{idx}", str(900000 + idx)
+        start = p.makeelement(W("bookmarkStart"), {W("id"): bid, W("name"): name})
+        end = p.makeelement(W("bookmarkEnd"), {W("id"): bid})
+        ppr = p.find(W("pPr"))
+        p.insert(0 if ppr is None else p.index(ppr) + 1, start)
+        p.append(end)
+        return name
 
     @staticmethod
     def _image_dims(blob: bytes) -> tuple[int, int] | None:
@@ -1575,7 +1752,9 @@ class DocxHandler(Handler):
             t = "".join(inner).strip()
             if t:
                 lines.append(t)
-            lines += [self._object_line(b) if b.startswith(self.OBJ_MARK) else b for b in inner_boxes]
+            lines += [self._object_line(b) if b.startswith(self.OBJ_MARK)
+                      else self._drawing_line(b) if b.startswith(self.DRAW_MARK) else b for b in inner_boxes
+                      if not b.startswith(self.DRAW_MARK) or self._drawings[int(b[len(self.DRAW_MARK):])]["figure"]]
         return "\n".join(lines)
 
     def _collect(self, node, parts: list[str], boxes: list[str], depth: int = 0) -> None:
@@ -1675,6 +1854,7 @@ class DocxHandler(Handler):
                 # a drawing is a text box, a picture, or both (a picture inside a box).
                 # Only the outermost boxes here; a box inside a box is reached through its
                 # paragraph's own walk, so nothing is read twice.
+                first_box = len(boxes)
                 for box in child.iter(W + "txbxContent"):
                     anc = box.getparent()
                     nested = False
@@ -1699,10 +1879,22 @@ class DocxHandler(Handler):
                 if has_pic:
                     info = self._image_ref(child)
                     if info and (info["file"] or info["alt"]):
-                        label = info["saved"] or info["file"] or info["name"]
                         size = f" {info['size']}" if info["size"] else ""
                         note = " (placeholder image, no visual content)" if info["placeholder"] else ""
-                        parts.append(f"[figure: {label}{size}{note}" + (f" — {info['alt']}" if info["alt"] else "") + "]")
+                        if info["saved"]:
+                            # an image link, so a Markdown viewer shows the picture
+                            parts.append(f"![{info['alt'] or info['name'] or 'figure'}]({md_link_target(info['saved'])})"
+                                         + (f" _({info['size'] + ', ' if info['size'] else ''}placeholder image, "
+                                            "no visual content)_" if info["placeholder"] else ""))
+                        else:
+                            label = info["file"] or info["name"]
+                            parts.append(f"[figure: {label}{size}{note}" + (f" — {info['alt']}" if info["alt"] else "") + "]")
+                elif obj is None:
+                    shape = self._drawing_shapes(child)
+                    if shape is not None:
+                        # before the text of its boxes: the drawing is what that text belongs to
+                        self._drawings.append(shape)
+                        boxes.insert(first_box, f"{self.DRAW_MARK}{len(self._drawings) - 1}")
                 continue
             elif tag == W + "r" and self._struck(child):
                 inner = []
@@ -1781,6 +1973,21 @@ class DocxHandler(Handler):
         self._collect(paragraph._p, parts, boxes)
         # Word splits one edit into many runs: "{++令和８年８月3++}{++1++}{++日++}" reads as one insertion
         text = "".join(parts).replace("++}{++", "").replace("--}{--", "")
+        # shapes placed one by one around the same paragraph make one figure
+        marks = [b for b in boxes if b.startswith(self.DRAW_MARK)]
+        if len(marks) > 1:
+            first = self._drawings[int(marks[0][len(self.DRAW_MARK):])]
+            for m in marks[1:]:
+                d = self._drawings[int(m[len(self.DRAW_MARK):])]
+                first["canvas"] |= d["canvas"]
+                first["group"] |= d["group"]
+                first["shapes"] += d["shapes"]
+                first["lines"] += d["lines"]
+                first["figure"] |= d["figure"]
+                d["merged"] = True
+            boxes = [b for b in boxes if b not in marks[1:]]
+        if marks and not self._drawings[int(marks[0][len(self.DRAW_MARK):])]["figure"]:
+            boxes = [b for b in boxes if b != marks[0]]      # text boxes only: read as text boxes
         return text, boxes
 
     def _note_change(self, el, kind: str, text: str) -> None:
@@ -1876,7 +2083,8 @@ class DocxHandler(Handler):
                 text = text.strip()
                 if text:
                     lines.append((("• " if bullet else (label + " ") if label else "") + text))
-                lines += [b if b.startswith(self.OBJ_MARK) else "[text box] " + b for b in boxes]
+                lines += [b if b.startswith(self.OBJ_MARK) else self._drawing_line(b) if b.startswith(self.DRAW_MARK)
+                          else "[text box] " + b for b in boxes]
             elif child.tag == W("tbl") and depth < 3:
                 for row in self._table_rows(Table(child, cell), depth + 1):
                     joined = " | ".join(c.replace("\n", " / ") for c in row if c.strip())
@@ -2051,6 +2259,10 @@ class DocxHandler(Handler):
                 if b.startswith(self.OBJ_MARK):
                     o = self._objects[int(b[len(self.OBJ_MARK):])]
                     blocks.append({**{k: v for k, v in o.items() if k != "kind"}, "kind": "object", "object": o["kind"]})
+                elif b.startswith(self.DRAW_MARK):
+                    idx = int(b[len(self.DRAW_MARK):])
+                    blocks.append({"kind": "drawing", "text": self._drawing_text(self._drawings[idx]),
+                                   "bookmark": self._bookmark(obj._p, idx)})
                 else:
                     blocks.append({"kind": "textbox", "text": b})
         if toc_run:
@@ -2069,11 +2281,13 @@ class DocxHandler(Handler):
                 "tables": sum(1 for b in blocks if b["kind"] == "table"),
                 "sections": len(doc.sections), "headings": headings, "comments": len(self._comments()),
                 "tracked_changes": self._has_tracked_changes(), "footnotes": len(self._notes),
-                "images": len(self._images), "textboxes": sum(1 for b in blocks if b["kind"] == "textbox")}
+                "images": len(self._images), "textboxes": sum(1 for b in blocks if b["kind"] == "textbox"),
+                "drawings": sum(1 for d in self._drawings if d["figure"] and not d.get("merged"))}
 
     def dump(self) -> dict:
         doc = self._open()
         blocks = self._blocks(doc)
+        not_rendered = self._render_drawings(blocks) if getattr(self.opts, "images", None) else ""
         headers = [p.text for s in doc.sections for p in s.header.paragraphs if p.text.strip()]
         footers = [p.text for s in doc.sections for p in s.footer.paragraphs if p.text.strip()]
         return {"file": str(self.path), "type": "docx", "blocks": blocks,
@@ -2081,13 +2295,14 @@ class DocxHandler(Handler):
                 "comments": self._comments(), "tracked_changes": self._has_tracked_changes(),
                 "changes": list(self._changes.values()),
                 "notes": {self._note_label[k]: v for k, v in self._notes.items() if k in self._note_label},
-                "images": self._images}
+                "images": self._images, "drawings_not_rendered": not_rendered,
+                "drawings": sum(1 for d in self._drawings if d["figure"] and not d.get("merged"))}
 
     def to_markdown(self, data: dict) -> str:
         out = md_title(data["file"])
         if "headings" in data:
             out.append(f"{data['paragraphs']} paragraphs · {data['tables']} tables · {data['images']} figures · "
-                       f"{data['footnotes']} notes · {data['textboxes']} text boxes · "
+                       f"{data['footnotes']} notes · {data['textboxes']} text boxes · {data.get('drawings', 0)} drawings · "
                        f"{data['comments']} comments · tracked changes: {data['tracked_changes']}")
             if data.get("title") or data.get("author"):
                 out.append(f"Title: {data.get('title') or '-'} · Author: {data.get('author') or '-'} · Modified: {data.get('modified') or '-'}")
@@ -2117,7 +2332,16 @@ class DocxHandler(Handler):
             out.append("> Footer: " + " / ".join(data["footers"]))
         if data["images"] and not any(i["saved"] for i in data["images"]):
             out.append(f"> {len(data['images'])} figure(s) are referenced as [figure: name]; pass --images DIR to extract them.")
-        if data["headers"] or data["footers"] or data["images"]:
+        # every drawing, those in table cells and text boxes too (marked there, never rendered)
+        unseen = data.get("drawings", 0) - sum(1 for b in data["blocks"] if b["kind"] == "drawing" and b.get("saved"))
+        if unseen > 0:
+            # a figure drawn with shapes has no picture in the file: say so, so it is not taken for absent
+            why = data.get("drawings_not_rendered") or (
+                "those in table cells and text boxes are marked only" if getattr(self.opts, "images", None)
+                else "pass --images DIR to render them through Word")
+            out.append(f"> {unseen} drawing(s) made of shapes are marked [drawing: ...] where they sit, "
+                       f"without a picture ({why}); their text, if any, follows as text boxes.")
+        if data["headers"] or data["footers"] or data["images"] or unseen > 0:
             out.append("")
         blocks = data["blocks"]
         for i, b in enumerate(blocks):
@@ -2150,6 +2374,8 @@ class DocxHandler(Handler):
                 out += render_word_table(b["rows"], b.get("header", True), keep_table=captioned)
             elif k == "textbox":
                 out.append("> **Text box:** " + md_para(b["text"]).replace("\n", "\n> "))
+            elif k == "drawing":
+                out.append(f"![{b['text']}]({md_link_target(b['saved'])})" if b.get("saved") else f"[{b['text']}]")
             elif k == "object":
                 out += render_object(b)
             elif k == "caption":

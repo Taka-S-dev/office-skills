@@ -156,7 +156,7 @@ def sentence_entries(md: str, known: set[str] | None = None) -> list[tuple[str, 
         line = re.sub(r"^>\s*\*\*Text box:\*\*\s*", "", line)      # text box content is content
         line = re.sub(r"\[\[\d{1,6}\]\]\(#[^)]{0,200}\)", "", line)  # markitdown footnote marks
         line = re.sub(r"\$\$?[^$]{1,400}\$\$?", "", line)           # equations are compared separately
-        line = re.sub(r"\[figure:[^\]]{0,500}\]", "", line)          # office2md figure markers after a caption
+        line = re.sub(r"(?<!!)\[(?:figure|drawing):[^\]]{0,500}\]", "", line)   # office2md markers; not an image's alt
         line = re.sub(r"\[([^\]]{0,3000})\]\{[^}]{0,200}\}", r"\1", line)  # pandoc spans [text]{.underline}
         line = re.sub(r"\{(?:width|height|#|\.)[^}]{0,200}\}?", "", line)  # pandoc attributes, also cut at line end
         line = re.sub(r"\s{0,20}\{[^}]{0,200}\}\s{0,20}$", "", line)  # pandoc heading attributes {.title}
@@ -346,7 +346,7 @@ def esc(s: str) -> str:
 # text of the same equation, a phrase bold in the reference and occurring exactly once in the
 # primary, a link whose text occurs exactly once in the primary. Everything else stays a review item.
 
-PROTECTED = re.compile(r"^(#{1,6}\s|\||```|> \*\*Text box|\[figure:|\[\^|_\(|_Content)")
+PROTECTED = re.compile(r"^(#{1,6}\s|\||```|> \*\*Text box|\[(?:figure|drawing):|!\[|\[\^|_\(|_Content)")
 
 
 def norm_eq(s: str) -> str:

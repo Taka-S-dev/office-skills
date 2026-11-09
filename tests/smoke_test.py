@@ -295,7 +295,7 @@ def main() -> int:
         check("spec.docx: nested bullets, ordered list, footnote, figure+alt, caption, text box, TOC, equation",
               all(x in o for x in ["- 任意項目\n  - 省略可能な拡張項目", "1. 注文を受け付ける\n2. 在庫を確認する",
                                    "[^1]", "[^1]: 旧版（第2版）の形式は対象外。",
-                                   "figure-001.png 1x1 (placeholder image, no visual content) — データの全体構成図",
+                                   "![データの全体構成図](", "figure-001.png) _(1x1, placeholder image, no visual content)_",
                                    "*図 1 データの構成*", "> **Text box:** 注記: 改訂時は見出し部も見直すこと",
                                    "(table of contents field, 3 entries)", "T = P + N × 4"])
               and (d / "img" / "figure-001.png").exists(), o)
@@ -310,8 +310,8 @@ def main() -> int:
                   "$$" in pm and "**30日以内に入荷**" in pm and "**Status: " in rv and "Applied automatically" in rv, rv + pm)
             check("md_crosscheck: READY when only a reference's dropped title differs",
                   "**Status: READY**" in rv, rv)
-            check("md_crosscheck: figure path relative to the .md with forward slashes, size shown",
-                  "[figure: spec_figures/figure-001.png 1x1 (placeholder image, no visual content)" in pm, pm)
+            check("md_crosscheck: figure as an image link relative to the .md with forward slashes, size shown",
+                  "![データの全体構成図](spec_figures/figure-001.png) _(1x1, placeholder image, no visual content)_" in pm, pm)
             (d / "xc" / "spec.md").write_text(pm + "\n手で追記した行。\n", encoding="utf-8")
             o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
             check("md_crosscheck: a rerun keeps manual edits",
@@ -415,6 +415,24 @@ def main() -> int:
         check("docx: text box in a cell marked, radical form read as the ideograph, notes numbered as displayed",
               "[text box] 枠内の注記" in o and "地方の制度[^1][^2]" in o and "[^2]: 二番目の注" in o, o)
         check("docx: a heading below Markdown's six levels is a bold line", "\n**第七段の見出し**\n" in o and "#######" not in o, o)
+        o = run(READ, d / "drawings.docx")
+        check("docx: figures drawn with shapes are marked where they sit, a lone text box is not one",
+              "[drawing: canvas, 2 shapes, 1 line or connector]\n\n> **Text box:** 受付" in o
+              and "図2 印だけの図\n\n[drawing: 1 shape]\n\n> **Text box:** 単独の注記" in o
+              and "図3 古い形式の線\n\n[drawing: 1 line or connector]" in o
+              and "3 drawing(s) made of shapes" in o, o)
+        o = run(READ, d / "drawings.docx", "--outline")
+        check("docx outline counts the drawings", "· 3 drawings ·" in o, o)
+        if sys.platform == "win32":
+            o = run(READ, d / "drawings.docx", "--images", d / "drawn", "--out", d / "drawn.md")
+            dm = (d / "drawn.md").read_text(encoding="utf-8") if (d / "drawn.md").exists() else o
+            check("docx --images: each drawing rendered through Word as a PNG and linked, or the reason said",
+                  ("![drawing: canvas, 2 shapes, 1 line or connector](drawn/drawing-001.png)" in dm
+                   and (d / "drawn" / "drawing-003.png").exists()) or "without a picture (Word" in dm, dm)
+            o = run(READ, d / "emf.docx", "--images", d / "emf_img", "--out", d / "emf.md")
+            em = (d / "emf.md").read_text(encoding="utf-8")
+            check("docx --images: an EMF picture saved as PNG and linked as an image",
+                  "![Picture 1](emf_img/figure-001.png)" in em and (d / "emf_img" / "figure-001.png").exists(), em)
         code = "\n".join([
             "import review_checks as rc, tempfile, os",
             "from pathlib import Path",
@@ -436,11 +454,13 @@ def main() -> int:
             "assert set(m.sentences('<p>&lt;Insert CSP Name&gt;</p>')) == set(m.sentences('<Insert CSP Name>'))",
             "assert set(m.sentences('図 １‑1　適用対象の範囲')) == set(m.sentences('図 1-1　適用対象の範囲'))",
             "assert m.TOC_LINE.match('> [改定履歴 [ii](#a)](#a)')",
-            # a level-7 heading pandoc writes with seven # is office2md's bold line
+            # a level-7 heading pandoc writes with seven # is office2md's bold line; a drawing's image
+            # link leaves no text behind
             # bold lines count only as a match for the other side's heading; **a** and **b** is no line of bold
             "assert m.headings('####### 第七段\\n**18.1.1 第七段**\\n') == ['第七段']",
             "assert m.headings('####### 第七段\\n**18.1.1 第七段**\\n**a** and **b**\\n', bold=True) == ['第七段', '18.1.1 第七段']",
             "assert set(m.sentences('####### 第七段の見出し')) == set(m.sentences('**18.1.1.1.1.1.1. 第七段の見出し**'))",
+            "assert m.sentences('![drawing: 2 shapes](x/drawing-001.png)') == {}",
             "assert m._head_key('II. an assessment') == m._head_key('an assessment')",
             "assert m._head_key('until 31^st^ March') == m._head_key('until 31st March')",
             "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",

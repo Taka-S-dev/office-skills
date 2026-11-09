@@ -848,6 +848,86 @@ with zipfile.ZipFile(out / "shapes.docx", "a") as z:
                '<w:footnote w:id="5"><w:p><w:r><w:t>最初の注</w:t></w:r></w:p></w:footnote>'
                '<w:footnote w:id="9"><w:p><w:r><w:t>二番目の注</w:t></w:r></w:p></w:footnote></w:footnotes>')
 
+# --- drawings.docx: figures drawn with shapes, which have no picture in the file ----------------
+# a canvas holding two labelled boxes and a connector, a shape with no text, a lone text box (read
+# as a text box, not a figure), and a VML line as older Word saved it
+WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+DRAW_NS = (f'xmlns:w="{W_NS}" xmlns:wps="{WPS}" '
+           'xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas" '
+           'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+           'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+           'xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office"')
+
+
+def wsp(sid, x, y, cx, cy, geom="rect", text=None, connector=False):
+    nv = "<wps:cNvCnPr/>" if connector else "<wps:cNvSpPr/>"
+    body = (f'<wps:txbx><w:txbxContent><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
+            if text else "")
+    return (f'<wps:wsp><wps:cNvPr id="{sid}" name="Shape {sid}"/>{nv}<wps:spPr><a:xfrm><a:off x="{x}" y="{y}"/>'
+            f'<a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="{geom}"><a:avLst/></a:prstGeom>'
+            '<a:solidFill><a:srgbClr val="4472C4"/></a:solidFill><a:ln w="12700"><a:solidFill>'
+            f'<a:srgbClr val="2F528F"/></a:solidFill></a:ln></wps:spPr>{body}<wps:bodyPr/></wps:wsp>')
+
+
+def inline(did, uri, inner, cx=3600000, cy=900000):
+    return (f'<w:r {DRAW_NS}><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">'
+            f'<wp:extent cx="{cx}" cy="{cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            f'<wp:docPr id="{did}" name="Drawing {did}"/><wp:cNvGraphicFramePr/><a:graphic>'
+            f'<a:graphicData uri="{uri}">{inner}</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>')
+
+
+dd = docx.Document()
+dd.add_heading("処理の流れ", level=1)
+dd.add_paragraph("図1 受付から審査まで")
+dd.add_paragraph()._p.append(parse_xml(inline(
+    11, "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas",
+    '<wpc:wpc><wpc:bg/><wpc:whole/>' + wsp(1, 0, 0, 1080000, 540000, text="受付")
+    + wsp(2, 2520000, 0, 1080000, 540000, text="審査")
+    + wsp(3, 1080000, 270000, 1440000, 0, geom="straightConnector1", connector=True) + '</wpc:wpc>')))
+dd.add_paragraph("図2 印だけの図")
+dd.add_paragraph()._p.append(parse_xml(inline(12, WPS, wsp(4, 0, 0, 720000, 720000, geom="ellipse"),
+                                              cx=720000, cy=720000)))
+dd.add_paragraph()._p.append(parse_xml(inline(13, WPS, wsp(5, 0, 0, 1800000, 360000, text="単独の注記"),
+                                              cx=1800000, cy=360000)))
+dd.add_paragraph("図3 古い形式の線")
+dd.add_paragraph()._p.append(parse_xml(
+    f'<w:r {DRAW_NS}><w:pict><v:line from="0,0" to="100pt,0" strokeweight="1pt"/></w:pict></w:r>'))
+# neither is a figure: the horizontal rule older Word wrote, and a text box shaped as storage
+dd.add_paragraph()._p.append(parse_xml(
+    f'<w:r {DRAW_NS}><w:pict><v:rect style="width:0;height:1.5pt" o:hralign="center" o:hrstd="t" o:hr="t"/>'
+    '</w:pict></w:r>'))
+dd.add_paragraph()._p.append(parse_xml(inline(14, WPS, wsp(6, 0, 0, 900000, 540000, geom="flowChartOnlineStorage",
+                                                       text="DB"), cx=900000, cy=540000)))
+dd.add_paragraph("本文の終わり。")
+dd.save(out / "drawings.docx")
+
+# emf.docx (Windows only: the metafile is drawn with GDI): a picture saved as EMF, which most
+# Markdown viewers cannot show
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+    gdi = ctypes.windll.gdi32
+    gdi.CreateEnhMetaFileW.restype = wintypes.HDC
+    gdi.CreateEnhMetaFileW.argtypes = [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.LPCWSTR]
+    gdi.Rectangle.argtypes = [wintypes.HDC] + [ctypes.c_int] * 4
+    gdi.CloseEnhMetaFile.restype = wintypes.HANDLE
+    gdi.CloseEnhMetaFile.argtypes = [wintypes.HDC]
+    gdi.DeleteEnhMetaFile.argtypes = [wintypes.HANDLE]
+    emf_path = out / "box.emf.tmp"
+    dc = gdi.CreateEnhMetaFileW(None, str(emf_path), None, None)
+    gdi.Rectangle(dc, 10, 10, 300, 200)
+    gdi.DeleteEnhMetaFile(gdi.CloseEnhMetaFile(dc))
+    ed = docx.Document()
+    ed.add_paragraph("図1 メタファイルの図")
+    import io
+    ed.add_picture(io.BytesIO(png))              # then its bytes and type become the metafile's
+    pic = [p for p in ed.part.package.parts if str(p.partname).startswith("/word/media/")][0]
+    pic._blob = emf_path.read_bytes()
+    pic._content_type = "image/x-emf"
+    pic.partname = PackURI("/word/media/image1.emf")
+    emf_path.unlink()
+    ed.save(out / "emf.docx")
+
 # --- csv ---
 (out / "sample.csv").write_text("名前,年齢\n太郎,30\n花子,25\n", encoding="cp932")
 print("samples written to", out)

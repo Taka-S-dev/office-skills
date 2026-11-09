@@ -430,6 +430,14 @@ def docx_visuals(data: dict, page_pdf: str = "") -> list[tuple[str, str, str]]:
             what = (f"Embedded object '{label}': its content is not extracted. Open it in Word and describe what "
                     "it contains, or note that it carries no information.")
         items.append((f"{k}{n[k]}", fingerprint(b), what))
+    drawings = [b for b in data.get("blocks", []) if b.get("kind") == "drawing"]
+    for i, b in enumerate(drawings, start=1):
+        # a figure drawn with shapes has no picture in the file: only Word's rendering shows it
+        shown = f" (rendered as {b['saved']})" if b.get("saved") else ""
+        items.append((f"drawing{i}", fingerprint([b.get("text")]),
+                      f"Drawing {i}, {b.get('text', 'drawing')}{shown}: compare it with the page{where}. The "
+                      "Markdown must show it, as the rendered picture or, where none was made, as a description of "
+                      "what it says (steps, arrows and their labels, what is grouped), placed where it sits."))
     for i, im in enumerate(data.get("images", []), start=1):
         if im.get("placeholder"):
             continue
