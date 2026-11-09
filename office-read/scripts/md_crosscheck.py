@@ -42,6 +42,7 @@ except AttributeError:
 # a number is a label only when a dot or a space follows it: "３類型に…" and "10件まで" keep their digits
 NUM_PREFIX = re.compile(r"^(第\s*[0-9０-９一二三四五六七八九十]+\s*[章節項部編]|[0-9０-９]+([.．][0-9０-９]+)*([.．]|(?=\s))"
                         r"|[(（][0-9０-９]+[)）]|[0-9０-９]{1,3}[)）]|[①-⑳]|[a-zA-Z][.)](?=\s)"
+                        r"|(?:[IVX]{2,5}|[ivx]{2,5})[.)](?=\s)"                                       # II. iv)
                         r"|[ⅰ-ⅿ]{1,4}[)）]?|[ぁ-んァ-ヶ][)）.．]?(?=\s)|[(（][a-zA-Z]{1,4}[)）](?=\s))\s*")  # 1) ア ⅱ) (a)
 
 
@@ -175,11 +176,17 @@ def sentence_entries(md: str, known: set[str] | None = None) -> list[tuple[str, 
                 for s in split_sentences(c):
                     out.append((s, raw, section))
             continue
-        if re.match(r"^#{1,6}\s", line):
-            head = "".join(split_sentences(re.sub(r"^#{1,6}\s*", "", line)))
+        # a heading: up to nine # (pandoc keeps Word's levels 7-9), or a whole bold line, which is how
+        # office2md writes a heading deeper than Markdown's six levels
+        bold = BOLD_LINE.match(line)
+        if bold:
+            line = bold.group(1)
+        # a bold line starts a section only when the other side has that heading (known)
+        if (bold and known is not None) or re.match(r"^#{1,9}\s", line):
+            head = "".join(split_sentences(re.sub(r"^#{1,9}\s*", "", line)))
             if head and (known is None or head in known):
                 section = head
-        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^#{1,9}\s*", "", line)
         line = re.sub(r"^(\s{0,8}[-*+]\s{1,8}|\s{0,8}\d{1,9}\.\s{1,8}|>\s{0,8}){1,10}", "", line)
         line = HTML_TAG.sub("", line)                               # a <placeholder> in the text stays
         for s in split_sentences(line):
@@ -202,6 +209,7 @@ def _head_key(h: str) -> str:
     """A heading compared without its number, spacing, quote style, digit width or emphasis
     marks (as sentences are, but kept whole however short: "概要" is a heading)."""
     h = radicals(NUM_PREFIX.sub("", h.strip())).translate(_WIDE_DIGITS)
+    h = re.sub(r"\^([^^\s]{1,20})\^", r"\1", h)            # pandoc superscript: 1^st^ is 1st
     h = re.sub(r"[“”\"‘’'*_`\\]", "", h)
     return re.sub(r"[\s　]+", "", h) or h.strip()
 
@@ -314,11 +322,18 @@ def html_tables(md: str) -> int:
     return n
 
 
-def headings(md: str) -> list[str]:
+BOLD_LINE = re.compile(r"^\*\*((?:[^*\\]|\\.){1,300})\*\*[ \t]*$")   # **text**, no unescaped * inside
+
+
+def headings(md: str, bold: bool = False) -> list[str]:
     # [ \t]+, not \s+: an empty heading line ("#") must not swallow the line after it
     # a heading pandoc marks .TOC-Heading belongs to the table of contents the primary collapses
+    # up to nine # (pandoc keeps Word's levels 7-9); with bold, whole bold lines too, which is how
+    # office2md writes a heading below Markdown's six levels (only as a match for the other side's
+    # heading: a converter bolds plenty of lines that are not headings)
+    pat = re.compile(r"^#{1,9}[ \t]+(.+)$" + (r"|" + BOLD_LINE.pattern if bold else ""), re.M)
     found = [re.sub(r"\s{0,20}\{[^{}]{0,200}\}\s{0,20}$", "", h[:1000])
-             for h in re.findall(r"^#{1,6}[ \t]+(.+)$", md, re.M) if ".TOC-Heading" not in h]
+             for h in (m.group(m.lastindex) for m in pat.finditer(md)) if ".TOC-Heading" not in h]
     return [re.sub(r"\s+", " ", h.strip()) for h in found if h.strip()]
 
 
@@ -606,9 +621,11 @@ def review(primary: str, refs: dict[str, str], src: Path, applied: dict[str, int
 
         r_heads = headings(text)
         strip = _head_key
-        only_ref = [h for h in r_heads if strip(h) not in {strip(x) for x in p_heads}
-                    and keep("heading", strip(h), h)[0]]
-        only_pri = [h for h in p_heads if strip(h) not in {strip(x) for x in r_heads}]
+        # a heading matches the other side's heading or its whole bold line (a level below six)
+        p_any = {strip(x) for x in headings(primary, bold=True)}
+        r_any = {strip(x) for x in headings(text, bold=True)}
+        only_ref = [h for h in r_heads if strip(h) not in p_any and keep("heading", strip(h), h)[0]]
+        only_pri = [h for h in p_heads if strip(h) not in r_any]
         if only_ref or only_pri:
             out.append(f"## Headings that differ from {name}")
             out.append("")

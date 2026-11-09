@@ -836,6 +836,7 @@ cellbox.cell(0, 1).paragraphs[0]._p.append(parse_xml(
     '<a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"><wps:wsp>'
     '<wps:txbx><w:txbxContent><w:p><w:r><w:t>枠内の注記</w:t></w:r></w:p></w:txbxContent></wps:txbx>'
     '</wps:wsp></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'))
+sd.add_heading("第七段の見出し", level=7)      # below the six levels Markdown has
 note = sd.add_paragraph("地⽅の制度")
 for nid in ("5", "9"):
     note._p.append(parse_xml(f'<w:r xmlns:w="{W_NS}"><w:footnoteReference w:id="{nid}"/></w:r>'))

@@ -414,6 +414,7 @@ def main() -> int:
               "> 留意事項  \n> 箱の中の二行目" in o and "\n申請日\n\n|  |  |\n|---|---|\n| 氏名 | 山田 |" in o, o)
         check("docx: text box in a cell marked, radical form read as the ideograph, notes numbered as displayed",
               "[text box] 枠内の注記" in o and "地方の制度[^1][^2]" in o and "[^2]: 二番目の注" in o, o)
+        check("docx: a heading below Markdown's six levels is a bold line", "\n**第七段の見出し**\n" in o and "#######" not in o, o)
         code = "\n".join([
             "import review_checks as rc, tempfile, os",
             "from pathlib import Path",
@@ -435,6 +436,13 @@ def main() -> int:
             "assert set(m.sentences('<p>&lt;Insert CSP Name&gt;</p>')) == set(m.sentences('<Insert CSP Name>'))",
             "assert set(m.sentences('図 １‑1　適用対象の範囲')) == set(m.sentences('図 1-1　適用対象の範囲'))",
             "assert m.TOC_LINE.match('> [改定履歴 [ii](#a)](#a)')",
+            # a level-7 heading pandoc writes with seven # is office2md's bold line
+            # bold lines count only as a match for the other side's heading; **a** and **b** is no line of bold
+            "assert m.headings('####### 第七段\\n**18.1.1 第七段**\\n') == ['第七段']",
+            "assert m.headings('####### 第七段\\n**18.1.1 第七段**\\n**a** and **b**\\n', bold=True) == ['第七段', '18.1.1 第七段']",
+            "assert set(m.sentences('####### 第七段の見出し')) == set(m.sentences('**18.1.1.1.1.1.1. 第七段の見出し**'))",
+            "assert m._head_key('II. an assessment') == m._head_key('an assessment')",
+            "assert m._head_key('until 31^st^ March') == m._head_key('until 31st March')",
             "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",
             "                        {'r': '**（１）管理項目について**\\n\\n**大切な語**を含む文\\n'})",
             "assert '**（１）' not in fixed and '**大切な語**を含む文' in fixed, fixed",  # a heading's bold stays off its index copy

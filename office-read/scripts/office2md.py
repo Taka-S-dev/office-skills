@@ -2123,7 +2123,13 @@ class DocxHandler(Handler):
         for i, b in enumerate(blocks):
             k = b["kind"]
             if k == "heading":
-                out.append("#" * (b["level"] + 1) + " " + (b["label"] + " " if b.get("label") else "") + b["text"])
+                head = (b["label"] + " " if b.get("label") else "") + b["text"]
+                if b["level"] + 1 <= 6:
+                    out.append("#" * (b["level"] + 1) + " " + head)
+                else:
+                    # deeper than ######, which Markdown does not go past: a bold line, its number kept
+                    bold = re.sub(r"(?<!\\)\*", r"\\*", md_para(head))     # a * inside must not end the bold
+                    out.append("**" + (bold[1:] if bold.startswith("\\") and not bold.startswith("\\*") else bold) + "**")
             elif k == "list":
                 indent = "  " * b.get("level", 0)
                 label = b.get("label")
