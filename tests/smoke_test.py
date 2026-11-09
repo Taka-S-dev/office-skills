@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+import json
 import sys
 import tempfile
 import zipfile
@@ -459,6 +460,21 @@ def main() -> int:
                                    "これは<em>「重要」</em>です。",
                                    "面積は10 m<sup>2</sup>、水はH<sub>2</sub>Oで、**必須**の欄と<mark>要確認</mark>の欄。",
                                    "\n**全体が太字の短い行**\n"]), o)
+        cc = d / "cc"
+        (cc / "docs").mkdir(parents=True)
+        shutil.copy(d / "numbering.docx", cc / "docs")
+        r1 = subprocess.run([PY, "-X", "utf8", str(ROOT / "tests" / "corpus_check.py"), str(cc / "docs"), "--save",
+                             str(cc / "a.json"), "--no-render"], capture_output=True, text=True, encoding="utf-8")
+        base = json.loads((cc / "a.json").read_text(encoding="utf-8"))
+        base["numbering.docx"]["checks"] = {k: "ok" for k in base["numbering.docx"]["checks"]}
+        base["numbering.docx"]["counts"]["links"] = -1          # as if the earlier run had fewer
+        (cc / "base.json").write_text(json.dumps(base), encoding="utf-8")
+        r2 = subprocess.run([PY, "-X", "utf8", str(ROOT / "tests" / "corpus_check.py"), str(cc / "docs"), "--save",
+                             str(cc / "b.json"), "--baseline", str(cc / "base.json"), "--no-render"],
+                            capture_output=True, text=True, encoding="utf-8")
+        check("corpus_check records each file's checks and fails when a count grows against the baseline",
+              r1.returncode == 0 and r2.returncode == 1 and "numbering.docx: links -1 -> 0" in r2.stdout,
+              r1.stdout + r1.stderr + r2.stdout + r2.stderr)
         o = run(READ, d / "numbering.docx")
         check("docx: lists of one definition count together and a restart restarts them; kana numbers as Word shows "
               "them; a bold （１） is still a subsection; a bold 表1 still captions its table",

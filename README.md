@@ -218,6 +218,14 @@ python tests/smoke_test.py && .\install.ps1
 
 テストに 1 行足すのは `tests/smoke_test.py` の `check(...)` を真似る。
 
+手元に評価用の文書の束（リポジトリには入れない）があるなら、変換を変えた前後で回して比べる。
+検査が ok から FAIL に変わった文書や、欠落などの件数が増えた文書を一覧にし、1 件でもあれば終了コード 1 を返す。
+
+```bash
+python tests/corpus_check.py D:\文書の束 --save before.json            # 変更前に記録
+python tests/corpus_check.py D:\文書の束 --save after.json --baseline before.json
+```
+
 ## 設計上の決めごと
 
 - 読みと書きを分けているのは、スキルの発動条件を明確にするためと、読み取り専用で使いたい
