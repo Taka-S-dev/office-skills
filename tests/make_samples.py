@@ -1,4 +1,5 @@
 """Generate sample office files for testing office2md.py."""
+import io
 import sys
 from pathlib import Path
 
@@ -910,6 +911,36 @@ dd.add_paragraph()._p.append(parse_xml(inline(14, WPS, wsp(6, 0, 0, 900000, 5400
 dd.add_paragraph("本文の終わり。")
 dd.save(out / "drawings.docx")
 
+# --- inline.docx: run formatting, header boxes and tables, spaced labels, a figure in a caption ---
+idoc = docx.Document()
+ip = idoc.add_paragraph("通常の文 ")
+ip.add_run("斜体の語").italic = True
+ip.add_run("と")
+ip.add_run("下線の語").underline = True
+ip.add_run("と")
+for piece in ("削除", "した語"):                 # one phrase Word split into two struck runs
+    ip.add_run(piece).font.strike = True
+idoc.add_paragraph("申 請 書")
+idoc.add_paragraph("*1 本書は*2を参照")          # typed note marks, not emphasis
+qp = idoc.add_paragraph("これは")
+qp.add_run("「重要」").italic = True          # emphasis beside brackets: written as a tag
+qp.add_run("です。")
+lt = idoc.add_table(rows=1, cols=3)
+lt.cell(0, 0).text = "補 装 具"
+lt.cell(0, 1).text = "車いす"
+lt.cell(0, 2).text = "男　女"                   # options to circle: kept apart
+hdr = idoc.sections[0].header
+hdr.paragraphs[0].text = "見出しの行"
+ht = hdr.add_table(rows=1, cols=2, width=docx.shared.Cm(10))
+ht.cell(0, 0).text = "文書番号"
+ht.cell(0, 1).text = "A-001"
+hdr.paragraphs[0]._p.append(parse_xml(inline(21, WPS, wsp(7, 0, 0, 900000, 300000, text="社外秘"),
+                                             cx=900000, cy=300000)))
+cap = idoc.add_paragraph()
+cap.add_run().add_picture(io.BytesIO(png))
+cap.add_run("図1 構成の説明")
+idoc.save(out / "inline.docx")
+
 # emf.docx (Windows only: the metafile is drawn with GDI): a picture saved as EMF, which most
 # Markdown viewers cannot show
 if sys.platform == "win32":
@@ -928,7 +959,6 @@ if sys.platform == "win32":
     gdi.DeleteEnhMetaFile(gdi.CloseEnhMetaFile(dc))
     ed = docx.Document()
     ed.add_paragraph("図1 メタファイルの図")
-    import io
     ed.add_picture(io.BytesIO(png))              # then its bytes and type become the metafile's
     pic = [p for p in ed.part.package.parts if str(p.partname).startswith("/word/media/")][0]
     pic._blob = emf_path.read_bytes()

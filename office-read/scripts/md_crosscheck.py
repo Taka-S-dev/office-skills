@@ -105,6 +105,8 @@ TOC_LINE = re.compile(r"^(?:[-*>]\s{0,4}){0,3}\[[^\n]{0,300}?\s\[?(?:[0-9]+|[ivx
 TOC_TAIL = re.compile(r"^[^\[\]\n]{1,300}?\s\[(?:[0-9]+|[ivxlcIVXLC]{1,6})\]\(#[^)]{0,300}\)\s*$")
 # the tags pandoc and markitdown write; anything else in angle brackets is text ("<Insert Name>")
 HTML_TAG = re.compile(r"</?(?:p|td|th|tr|br|em|strong|a|sup|sub|span|div|table|tbody|thead|tfoot|ul|ol|li|img|u|s|b|i|del|ins|code|colgroup|col|caption|blockquote|h[1-6]|figure|figcaption|pre|hr|mark|section|nav|small|dl|dt|dd)\b[^<>]{0,500}>", re.I)
+# tags inside a line of text (underline, emphasis, superscript): taken out without a space
+INLINE_TAG = re.compile(r"</?(?:em|strong|sup|sub|span|u|s|b|i|del|ins|code|mark|small|a)\b[^<>]{0,500}>", re.I)
 # characters scanned by the substring fallback per reference (a 118-page plan needs about 1e8)
 SUBSTRING_BUDGET = 2_000_000_000
 # Every pattern below runs on document text, so every repeat is bounded: a crafted line must not
@@ -162,6 +164,7 @@ def sentence_entries(md: str, known: set[str] | None = None) -> list[tuple[str, 
         line = re.sub(r"\s{0,20}\{[^}]{0,200}\}\s{0,20}$", "", line)  # pandoc heading attributes {.title}
         line = re.sub(r"<br\s{0,5}/?>", " ", line)
         line = re.sub(r"<((?:https?|mailto|ftp):[^<>\s]{1,500})>", r"\1", line)   # autolinks <https://...>
+        line = INLINE_TAG.sub("", line)          # <u>word</u>(3): no space, or (3) would read as a list label
         line = HTML_TAG.sub(" ", line)                             # pandoc HTML tables: tags, not text
         line = html.unescape(line)                                 # &lt;Insert Name&gt; is the text <Insert Name>
         line = re.sub(r"\^([^^\s]{1,20})\^", r"\1", line)          # pandoc superscript ^注１）^

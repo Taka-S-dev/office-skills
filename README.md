@@ -96,7 +96,7 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
 
 1. `md_crosscheck.py 仕様書.docx --out-dir ./md` を実行。`仕様書.md`（自前変換。見出しの自動番号、脚注、
    変更履歴の印（`{++追加++}` `{--削除--}`）とコメントの位置、
-   図の alt、テキストボックス、リンクを保持。図形で描いた図（キャンバス、グループ、線）は置かれた位置に
+   図の alt、テキストボックス、リンク、斜体・下線・取り消し線、ヘッダーの中の表やテキストボックスを保持。図形で描いた図（キャンバス、グループ、線）は置かれた位置に
    `[drawing: …]` と印を出し、Word があれば Word の表示どおりに PNG にして画像リンクにする。EMF / WMF の
    画像も PNG にする。Markdown の 6 段を超える見出しは番号付きの太字行になる）と、pandoc / markitdown が入っていればそれらの変換結果、
    そして `仕様書.review.md` ができる。

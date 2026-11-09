@@ -439,6 +439,13 @@ def main() -> int:
               and "図2 印だけの図\n\n[drawing: 1 shape]\n\n> **Text box:** 単独の注記" in o
               and "図3 古い形式の線\n\n[drawing: 1 line or connector]" in o
               and "3 drawing(s) made of shapes" in o, o)
+        o = run(READ, d / "inline.docx")
+        check("docx: italic, underline and a struck phrase split over runs; header table and box; spaced labels; "
+              "a figure on its own line",
+              all(x in o for x in ["通常の文 *斜体の語*と<u>下線の語</u>と~~削除した語~~",
+                                   "> Header: 見出しの行 / 社外秘 / 文書番号 / A-001", "\n申請書\n", "| 補装具 | 車いす | 男　女 |",
+                                   "no visual content)]  \n図1 構成の説明", "\\*1 本書は\\*2を参照",
+                                   "これは<em>「重要」</em>です。"]), o)
         o = run(READ, d / "drawings.docx", "--outline")
         check("docx outline counts the drawings", "· 3 drawings ·" in o, o)
         if sys.platform == "win32":
@@ -480,6 +487,8 @@ def main() -> int:
             "assert set(m.sentences('####### 第七段の見出し')) == set(m.sentences('**18.1.1.1.1.1.1. 第七段の見出し**'))",
             "assert m.sentences('![drawing: 2 shapes](x/drawing-001.png)') == {}",
             "assert m._head_key('II. an assessment') == m._head_key('an assessment')",
+            # an underlined word followed by a note number reads the same in both converters' forms
+            "assert set(m.sentences('13. <u>条件違反</u>(3)　適合等')) == set(m.sentences('13. [条件違反]{.underline}~(3)~　適合等'))",
             "assert m._head_key('until 31^st^ March') == m._head_key('until 31st March')",
             "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",
             "                        {'r': '**（１）管理項目について**\\n\\n**大切な語**を含む文\\n'})",

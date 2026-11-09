@@ -76,7 +76,9 @@ def md_para(text: str) -> str:
     otherwise render as a heading, quote or list and look like structure the tool emitted."""
     out = []
     for line in text.split("\n"):
-        if line[:1] in ("#", ">", "-", "*", "+", "|") or re.match(r"\d+\. ", line):
+        # a * is a list or a rule only before a space or as *** alone; *word* at a line start is emphasis
+        star = line[:1] == "*" and re.match(r"\*(\s|$)|\*{3,}\s*$", line)
+        if line[:1] in ("#", ">", "-", "+", "|") or star or re.match(r"\d+\. ", line):
             line = "\\" + line
         out.append(line)
     return "\n".join(out)
@@ -209,6 +211,24 @@ def metafile_png(blob: bytes, trim: bool = False) -> bytes | None:
         return buf.getvalue()
     except Exception:  # noqa: BLE001 - Pillow raises many kinds; any failure keeps the metafile
         return None
+
+
+_SPACED = re.compile(r"[぀-ヿ一-鿿々〆](?:[ 　]+[぀-ヿ一-鿿々〆]){1,7}")
+
+
+def close_spaced(text: str) -> str:
+    """A short label typed with spaces between its characters to fill a cell or centre a title
+    (補 装 具, 手　　当　　名) written closed up, so it is found as the word it is. Only a text
+    that is nothing but single kana or kanji with spaces between."""
+    s = text.strip()
+    if not _SPACED.fullmatch(s):
+        return text
+    letters = re.sub(r"[ 　]+", "", s)
+    # 男　女, 有 無, 大 中 小: options to circle, each its own word
+    return text if set(letters) <= _CHOICE_CHARS else letters
+
+
+_CHOICE_CHARS = set("男女有無可否甲乙要不適是非賛大中小上下新旧済未良優正副前後左右内外")
 
 
 def md_link_target(path: str) -> str:
@@ -1870,6 +1890,29 @@ try {
             return "Word could not render them"
         return "" if all(b.get("saved") for b in todo) else "Word could not render these ones"
 
+    def _hf_lines(self, part) -> list[str]:
+        """Every line of a header or footer: its paragraphs, and those inside its tables and text
+        boxes (a document number in a header table, a 社外秘 stamp in a box). Each paragraph gives
+        only its own text, not the text of a box it holds, which is a paragraph of its own."""
+        try:
+            el = part._element
+        except (AttributeError, ValueError):
+            return []
+        W = lambda n: self._q("w", n)  # noqa: E731
+        lines = []
+        for p in el.iter(W("p")):
+            own = []
+            for t in p.iter(W("t")):
+                anc = t.getparent()
+                while anc is not None and anc.tag != W("p"):
+                    anc = anc.getparent()
+                if anc is p:
+                    own.append(t.text or "")
+            text = re.sub(r"\s+", " ", "".join(own)).strip()
+            if text and text not in lines:
+                lines.append(text)
+        return lines
+
     def _bookmark(self, p, idx: int) -> str:
         """A bookmark around a paragraph's content, in memory only, so Word can find it again."""
         W = lambda n: self._q("w", n)  # noqa: E731
@@ -1922,7 +1965,7 @@ try {
             inner: list[str] = []
             inner_boxes: list[str] = []
             self._collect(p, inner, inner_boxes, depth + 1)
-            t = "".join(inner).strip()
+            t = self._inline_marks("".join(inner)).strip()
             if t:
                 lines.append(t)
             lines += [self._object_line(b) if b.startswith(self.OBJ_MARK)
@@ -1997,7 +2040,7 @@ try {
                     parts.append(text)
                 continue
             if tag == W + "t" or tag == self._q("m", "t"):
-                parts.append(radicals(child.text or ""))
+                parts.append(radicals(child.text or "").replace("*", "\\*"))   # a typed * is no emphasis
             elif tag == W + "tab":
                 parts.append("\t")
             elif tag in (W + "br", W + "cr"):
@@ -2012,7 +2055,8 @@ try {
                     self._collect(rb, base, boxes, depth)
                 if rt is not None:
                     self._collect(rt, reading, boxes, depth)
-                b, r = "".join(base).strip(), "".join(reading).strip()
+                # the run around the ruby carries its formatting; marks inside would split ｜base《reading》
+                b, r = (re.sub("[-]", "", "".join(x)).strip() for x in (base, reading))
                 parts.append(f"｜{b}《{r}》" if b and r else b)
             elif tag in (W + "footnoteReference", W + "endnoteReference"):
                 # the number the reader sees: notes are numbered in the order they are referenced,
@@ -2054,14 +2098,16 @@ try {
                     if info and (info["file"] or info["alt"]):
                         size = f" {info['size']}" if info["size"] else ""
                         note = " (placeholder image, no visual content)" if info["placeholder"] else ""
+                        # on a line of its own: the caption typed in the same paragraph is text, not
+                        # part of the figure's name (an image link, so a viewer shows the picture)
                         if info["saved"]:
-                            # an image link, so a Markdown viewer shows the picture
-                            parts.append(f"![{info['alt'] or info['name'] or 'figure'}]({md_link_target(info['saved'])})"
+                            parts.append(f"\n![{info['alt'] or info['name'] or 'figure'}]({md_link_target(info['saved'])})"
                                          + (f" _({info['size'] + ', ' if info['size'] else ''}placeholder image, "
-                                            "no visual content)_" if info["placeholder"] else ""))
+                                            "no visual content)_" if info["placeholder"] else "") + "\n")
                         else:
                             label = info["file"] or info["name"]
-                            parts.append(f"[figure: {label}{size}{note}" + (f" — {info['alt']}" if info["alt"] else "") + "]")
+                            parts.append(f"\n[figure: {label}{size}{note}" + (f" — {info['alt']}" if info["alt"] else "")
+                                         + "]\n")
                 elif obj is None:
                     shape = self._drawing_shapes(child)
                     if shape is not None:
@@ -2069,24 +2115,64 @@ try {
                         self._drawings.append(shape)
                         boxes.insert(first_box, f"{self.DRAW_MARK}{len(self._drawings) - 1}")
                 continue
-            elif tag == W + "r" and self._struck(child):
+            elif tag == W + "r" and self._run_marks(child):
                 inner = []
                 self._collect(child, inner, boxes, depth)
                 text = "".join(inner)
-                parts.append(f"~~{text}~~" if text.strip() else text)
+                marks = self._run_marks(child) if text.strip() else ""
+                # open and close marks, made Markdown once the paragraph is whole (_inline_marks)
+                parts.append("".join(self._MARKS[k][0] for k in marks) + text
+                             + "".join(self._MARKS[k][1] for k in reversed(marks)))
             else:
                 self._collect(child, parts, boxes, depth)
 
-    def _struck(self, run) -> bool:
-        """Direct strikethrough on a run (w:strike or w:dstrike not switched off)."""
+    # strike, italic, underline: (open, close) stand-ins and the Markdown each becomes
+    _MARKS = {"s": ("", "", "~~", "~~"), "i": ("", "", "*", "*"),
+              "u": ("", "", "<u>", "</u>")}
+
+    def _run_marks(self, run) -> str:
+        """Formatting set directly on a run: s strikethrough (w:strike, w:dstrike), i italic, u
+        underline. Only direct formatting: a link's underline comes from its character style."""
         rpr = run.find(self._q("w", "rPr"))
         if rpr is None:
-            return False
-        for name in ("strike", "dstrike"):
+            return ""
+
+        def on(name: str, off=("0", "false", "off")) -> bool:
             el = rpr.find(self._q("w", name))
-            if el is not None and (el.get(self._q("w", "val")) or "true").lower() not in ("0", "false", "off"):
-                return True
-        return False
+            return el is not None and (el.get(self._q("w", "val")) or "true").lower() not in off
+        return ("s" if on("strike") or on("dstrike") else "") + ("i" if on("i") else "") + \
+               ("u" if on("u", ("none", "0", "false", "off")) else "")
+
+    @classmethod
+    def _inline_marks(cls, text: str) -> str:
+        """The run marks as Markdown: neighbouring runs with the same formatting join into one
+        span (Word splits a phrase into many runs), and spaces at a span's edge move outside it
+        (*word * is no emphasis)."""
+        if not re.search("[-]", text):
+            return text
+        for o, c, _, _ in cls._MARKS.values():
+            text = text.replace(c + o, "")
+        def span(m, mo: str, mc: str, tag: str) -> str:
+            if not m[2]:
+                return m[1] + m[3]
+            # *「重要」*です does not render: a mark beside punctuation needs a word on its outer
+            # side in CommonMark, which Japanese text seldom has. The HTML tag always works.
+            def punct(ch: str) -> bool:
+                return unicodedata.category(ch)[0] in "PS"
+
+            def word(ch: str) -> bool:                  # neither space, punctuation nor a line edge
+                return bool(ch) and not ch.isspace() and not punct(ch)
+            before = m.string[m.start() - 1] if m.start() and not m[1] else ""
+            after = m.string[m.end()] if m.end() < len(m.string) and not m[3] else ""
+            edge = (punct(m[2][0]) and word(before)) or (punct(m[2][-1]) and word(after))
+            if edge and tag:
+                mo, mc = f"<{tag}>", f"</{tag}>"
+            return f"{m[1]}{mo}{m[2]}{mc}{m[3]}"
+        import unicodedata
+        for (o, c, mo, mc), tag in zip(cls._MARKS.values(), ("del", "em", "")):
+            text = re.sub(re.escape(o) + r"(\s*)(.*?)(\s*)" + re.escape(c),
+                          lambda m, mo=mo, mc=mc, tag=tag: span(m, mo, mc, tag), text, flags=re.S)
+        return text
 
     def _part_xml(self, rid: str):
         """Parsed XML of a related part (SmartArt data, chart), with the safe parser."""
@@ -2145,7 +2231,7 @@ try {
         boxes: list[str] = []
         self._collect(paragraph._p, parts, boxes)
         # Word splits one edit into many runs: "{++令和８年８月3++}{++1++}{++日++}" reads as one insertion
-        text = "".join(parts).replace("++}{++", "").replace("--}{--", "")
+        text = self._inline_marks("".join(parts).replace("++}{++", "").replace("--}{--", ""))
         # shapes placed one by one around the same paragraph make one figure
         marks = [b for b in boxes if b.startswith(self.DRAW_MARK)]
         if len(marks) > 1:
@@ -2167,6 +2253,7 @@ try {
         """Remember a tracked change for the list at the end (one entry per change id)."""
         W = lambda n: self._q("w", n)  # noqa: E731
         cid = el.get(W("id")) or str(len(self._changes))
+        text = re.sub("[-]", "", text)          # run marks: the list shows the words
         if cid in self._changes or not text.strip():
             return
         self._changes[cid] = {"kind": kind, "author": re.sub(r"\s+", " ", el.get(W("author")) or "").strip()[:80],
@@ -2253,7 +2340,7 @@ try {
                 p = Paragraph(child, cell)
                 text, boxes = self._para(p)
                 label, bullet = self._label(self._num_pr(p))
-                text = text.strip()
+                text = close_spaced(text.strip())
                 if text:
                     lines.append((("• " if bullet else (label + " ") if label else "") + text))
                 lines += [b if b.startswith(self.OBJ_MARK) else self._drawing_line(b) if b.startswith(self.DRAW_MARK)
@@ -2395,7 +2482,7 @@ try {
                 blocks.append({"kind": "toc", "text": f"(table of contents, {toc_run} entries)", "count": toc_run})
                 toc_run = 0
             text, boxes = self._para(obj)
-            text = text.strip()
+            text = close_spaced(text.strip())
             label, bullet = self._label(self._num_pr(obj))
             lvl = self._heading_level(obj)
             one_line = re.sub(r"\s+", " ", text)      # headings, list items and captions are single lines
@@ -2461,10 +2548,13 @@ try {
         doc = self._open()
         blocks = self._blocks(doc)
         not_rendered = self._render_drawings(blocks) if getattr(self.opts, "images", None) else ""
-        headers = [p.text for s in doc.sections for p in s.header.paragraphs if p.text.strip()]
-        footers = [p.text for s in doc.sections for p in s.footer.paragraphs if p.text.strip()]
+        # a header linked to the previous section has no part of its own (reading it would add one)
+        headers = [t for s in doc.sections for h in (s.header, s.first_page_header)
+                   if not h.is_linked_to_previous for t in self._hf_lines(h)]
+        footers = [t for s in doc.sections for f in (s.footer, s.first_page_footer)
+                   if not f.is_linked_to_previous for t in self._hf_lines(f)]
         return {"file": str(self.path), "type": "docx", "blocks": blocks,
-                "headers": sorted(set(headers)), "footers": sorted(set(footers)),
+                "headers": list(dict.fromkeys(headers)), "footers": list(dict.fromkeys(footers)),
                 "comments": self._comments(), "tracked_changes": self._has_tracked_changes(),
                 "changes": list(self._changes.values()),
                 "notes": {self._note_label[k]: v for k, v in self._notes.items() if k in self._note_label},
@@ -2525,7 +2615,8 @@ try {
                     out.append("#" * (b["level"] + 1) + " " + head)
                 else:
                     # deeper than ######, which Markdown does not go past: a bold line, its number kept
-                    bold = re.sub(r"(?<!\\)\*", r"\\*", md_para(head))     # a * inside must not end the bold
+                    # a typed * is already escaped, so * left in the text is the heading's own emphasis
+                    bold = md_para(head)
                     out.append("**" + (bold[1:] if bold.startswith("\\") and not bold.startswith("\\*") else bold) + "**")
             elif k == "list":
                 indent = "  " * b.get("level", 0)
@@ -2552,11 +2643,13 @@ try {
             elif k == "object":
                 out += render_object(b)
             elif k == "caption":
-                out.append("*" + md_para(b["text"]) + "*")
+                # the caption is italic as a whole: italic inside it would nest into broken marks
+                out.append("*" + re.sub(r"(?<!\\)\*", "", md_para(b["text"])) + "*")
             elif k == "toc":
                 out.append(f"_{b['text']}; the headings below are the live structure._")
             elif b.get("bold"):
-                out.append("**" + md_para(b["text"]).lstrip("\\") + "**")
+                para = md_para(b["text"])        # md_para's own escape goes; a typed \* stays escaped
+                out.append("**" + (para[1:] if para.startswith("\\") and not para.startswith("\\*") else para) + "**")
             else:
                 out.append(md_para(b["text"]).replace("\n", "  \n"))
             out.append("")
