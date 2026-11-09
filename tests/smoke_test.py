@@ -571,6 +571,10 @@ def main() -> int:
             "out, k = rc.apply_numbers(nums, md)",
             "assert k == 2 and '## 第１章 本文の全体像' in out and '2. 番号付きの段落の本文' in out and '- (4) 組織' in out, out",
             "assert rc.numbering_misses(nums, out) == [('(5)', '組織の成長の視点', '- (4) 組織の成長の視点')]",
+            # a label is the document's own definition: markup in it never reaches the Markdown
+            "out, k = rc.apply_numbers([('[x](https://e.com/a)', '三つ目の段落の本文', '3'), ('<img src=x>1', '四つ目の段落の本文', '3')],"
+            " '- 3 三つ目の段落の本文\\\\n- 4 四つ目の段落の本文')",
+            "assert k == 0 and 'https' not in out and '<img' not in out, out",
             "import office2md, io",
             "from PIL import Image",
             "buf = io.BytesIO(); Image.new('CMYK', (4, 3)).save(buf, 'TIFF')",

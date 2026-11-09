@@ -880,7 +880,9 @@ def apply_numbers(numbers: list[tuple], md: str) -> tuple[str, int]:
     for row in numbers:
         label = _label_of(row)
         text = row[1].strip() if len(row) > 1 else ""
-        if not label or len(n(text)) < 4:
+        # the label comes from the document's numbering definition: only something shaped like a
+        # number goes into the Markdown, never brackets with a target, tags or other markup
+        if not label or len(label) > 40 or not _LABEL_ONLY.fullmatch(label) or len(n(text)) < 4:
             continue
         key = n(text)[:24]
         hits = [i for i, nl in enumerate(norm) if key in nl]
