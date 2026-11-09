@@ -87,18 +87,18 @@ def source_state(md: str, src: Path) -> tuple[str, str, str]:
 
 # -- renders kept next to the Markdown ---------------------------------------------------------------
 
-def renders_current(render_dir: Path, src: Path) -> bool:
-    stamp = render_dir / "source.sha256"
+def renders_current(render_dir: Path, src: Path, stamp: str = "source.sha256") -> bool:
+    """Whether what render_dir holds was made from this version of src (its stamp file)."""
     try:
-        return stamp.read_text(encoding="utf-8").strip() == office2md.file_digest(src)
+        return (render_dir / stamp).read_text(encoding="utf-8").strip() == office2md.file_digest(src)
     except OSError:
         return False
 
 
-def stamp_renders(render_dir: Path, src: Path) -> None:
+def stamp_renders(render_dir: Path, src: Path, stamp: str = "source.sha256") -> None:
     try:
         render_dir.mkdir(parents=True, exist_ok=True)
-        (render_dir / "source.sha256").write_text(office2md.file_digest(src) + "\n", encoding="utf-8")
+        (render_dir / stamp).write_text(office2md.file_digest(src) + "\n", encoding="utf-8")
     except OSError:
         pass
 
@@ -845,23 +845,77 @@ def picture_count(md: str) -> int:
             + len(re.findall(r"(?<!!)\[(?:figure|drawing): ", md)))
 
 
+# what may sit between a line's Markdown prefix and its text and still be only a number label
+_LABEL_ONLY = re.compile(r"\s*[(（\[]?[0-9０-９A-Za-zⅰ-ⅿⅠ-Ⅿ①-⑳一二三四五六七八九十〇ぁ-んァ-ヶｦ-ﾝ第章節項条.．\-]{1,12}"
+                         r"[)）\]]?[.．)）]?\s*")
+
+
+def _num_norm(s: str) -> str:
+    """A line as the number check compares it: width-folded, without spaces, Markdown or tags."""
+    import unicodedata
+    return re.sub(r"[\s\\*_`#>|]|</?\w+[^<>]{0,50}>", "", unicodedata.normalize("NFKC", s))
+
+
+def _label_of(row) -> str | None:
+    """Word's label for a numbered paragraph, or None for a bullet: Word's list type says so
+    (1 bullet, 6 picture bullet), or the label is a symbol or one letter in a symbol font (o, l)."""
+    label = row[0].strip()
+    if len(row) > 2 and row[2] in ("1", "6"):
+        return None
+    folded = _num_norm(label)                        # full-width １ reads as 1, half-width ｱ as ア
+    if not re.search(r"[0-9A-Za-zⅰ-ⅿⅠ-Ⅿ①-⑳一二三四五六七八九十ぁ-んァ-ヶｦ-ﾝ]", folded) or re.fullmatch(r"[A-Za-z]", folded):
+        return None
+    return label
+
+
+def apply_numbers(numbers: list[tuple], md: str) -> tuple[str, int]:
+    """Word's own number on each Markdown line whose number differs from it: where Word is at
+    hand it is the authority, and office2md's numbering is the fallback. Only a line found once,
+    holding the paragraph's text after nothing but its Markdown prefix and a number label, is
+    changed, so a table cell or a quote that repeats the words is left alone."""
+    n = _num_norm
+    lines = md.split("\n")
+    norm = [n(l) for l in lines]
+    changed = 0
+    for row in numbers:
+        label = _label_of(row)
+        text = row[1].strip() if len(row) > 1 else ""
+        if not label or len(n(text)) < 4:
+            continue
+        key = n(text)[:24]
+        hits = [i for i, nl in enumerate(norm) if key in nl]
+        if len(hits) != 1:
+            continue
+        i = hits[0]
+        lab = n(label).rstrip(".")
+        if lab in norm[i][:max(0, norm[i].find(key))]:
+            continue                                   # the number is already there
+        raw = lines[i]
+        start = raw.find(text[:6])
+        if start < 0:
+            continue
+        prefix = re.match(r"\s*(?:#{1,9}\s+|[-*+]\s+|>\s*)*(?:\*\*|<strong>)?", raw[:start])
+        between = raw[prefix.end():start]
+        if between.strip() and not _LABEL_ONLY.fullmatch(between):
+            continue
+        lines[i] = raw[:prefix.end()] + label + " " + raw[start:]
+        norm[i] = n(lines[i])
+        changed += 1
+    return "\n".join(lines), changed
+
+
 def numbering_misses(numbers: list[tuple], md: str) -> list[tuple[str, str, str]]:
     """Paragraphs Word numbers (its ListString) whose number the Markdown line lacks. Returns
     (label, text, the Markdown line). A paragraph whose text is not found is the text check's
     business; a text found on several lines is fine when one of them carries the number."""
-    import unicodedata
-
-    def n(s: str) -> str:
-        return re.sub(r"[\s\\*_`#>|]|</?\w+[^<>]{0,50}>", "", unicodedata.normalize("NFKC", s))
+    n = _num_norm
     lines = [(n(l), l) for l in md.splitlines() if l.strip()]
     out = []
     for row in numbers:
-        label, text = row[0], row[1]
-        if len(row) > 2 and row[2] in ("1", "6"):     # Word's list type: a bullet, a picture bullet
-            continue
+        label, text = _label_of(row), row[1]
+        if not label:
+            continue                                      # a bullet: Word's list type, a symbol, a symbol-font letter
         lab = n(label).rstrip(".")
-        if not re.search(r"[0-9A-Za-zⅰ-ⅿⅠ-Ⅿ①-⑳一二三四五六七八九十ぁ-んァ-ヶｦ-ﾝ]", lab) or re.fullmatch(r"[A-Za-z]", lab):
-            continue                                      # a bullet: a symbol, or a letter in a symbol font
         key = n(text)[:24]
         if len(key) < 4:
             continue

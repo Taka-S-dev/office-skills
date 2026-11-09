@@ -213,6 +213,8 @@ _CIRCLED = re.compile("[①-⑳Ⅰ-ⅿ]")
 def _head_key(h: str) -> str:
     """A heading compared without its number, spacing, quote style, digit width or emphasis
     marks (as sentences are, but kept whole however short: "概要" is a heading)."""
+    # emphasis first: a heading bold as a whole (# **1. 概要**) hides its number from NUM_PREFIX
+    h = re.sub(r"(?<!\\)\*{1,3}|</?(?:strong|em|b|i)>", "", h.strip())
     h = radicals(NUM_PREFIX.sub("", h.strip())).translate(_WIDE_DIGITS)
     h = re.sub(r"\^([^^\s]{1,20})\^", r"\1", h)            # pandoc superscript: 1^st^ is 1st
     h = INLINE_TAG.sub("", h)                               # office2md's <sup>, <mark>, <strong>
@@ -258,8 +260,10 @@ def links(md: str) -> dict[str, str]:
 
 
 def emphasis(md: str) -> list[str]:
-    # office2md writes bold beside punctuation as <strong>, where ** would not render
-    return [m.strip() for m in re.findall(r"\*\*([^*\n]{2,80})\*\*|<strong>([^<\n]{2,80})</strong>", md)
+    # office2md writes bold beside punctuation as <strong>, where ** would not render. A heading's
+    # bold is the heading's look (# **1. 概要**), compared as a heading, not as a bold phrase
+    body = "\n".join(line for line in md.split("\n") if not line.lstrip().startswith("#"))
+    return [m.strip() for m in re.findall(r"\*\*([^*\n]{2,80})\*\*|<strong>([^<\n]{2,80})</strong>", body)
             for m in m if m.strip()]
 
 
@@ -1181,7 +1185,13 @@ def word_main(src: Path, a) -> int:
         if t is not None:
             refs["pandoc"] = t
     if not a.no_markitdown:
-        t = run_markitdown(src, rdir / "markitdown.md")
+        # markitdown takes seconds on a large document: its output is reused while the file is the same
+        if not a.fresh and (rdir / "markitdown.md").exists() and rc.renders_current(rdir, src, "markitdown.sha256"):
+            t = (rdir / "markitdown.md").read_text(encoding="utf-8")
+        else:
+            t = run_markitdown(src, rdir / "markitdown.md")
+            if t is not None:
+                rc.stamp_renders(rdir, src, "markitdown.sha256")
         if t is not None:
             refs["markitdown"] = t
 
@@ -1204,6 +1214,16 @@ def word_main(src: Path, a) -> int:
             if render_docx(src, render_dir):
                 rc.stamp_renders(render_dir, src)
                 page_pdf = f"{render_dir.name}/document.pdf"
+    numbers = None
+    if page_pdf and (render_dir / "numbers.tsv").exists():
+        numbers = [tuple(ln.split("\t")) for ln in
+                   (render_dir / "numbers.tsv").read_text(encoding="utf-8-sig").splitlines() if "\t" in ln]
+        if not a.no_apply:
+            # Word's numbers are the authority where Word printed the document
+            primary, fixed = rc.apply_numbers(numbers, primary)
+            if fixed:
+                primary_path.write_text(primary, encoding="utf-8")
+                applied = {**(applied or {}), "numbers": fixed}
     visuals = rc.docx_visuals(data, page_pdf, "../") + rc.docx_census(src, data)
     pages: list[str] = []
     if page_pdf:
@@ -1211,10 +1231,6 @@ def word_main(src: Path, a) -> int:
         if pages:
             spans = rc.page_spans(primary, pages)
             visuals += rc.page_checks(spans, page_pdf, f"../{primary_path.name}", a.sample_pages)
-    numbers = None
-    if page_pdf and (render_dir / "numbers.tsv").exists():
-        numbers = [tuple(ln.split("\t")) for ln in
-                   (render_dir / "numbers.tsv").read_text(encoding="utf-8-sig").splitlines() if "\t" in ln]
     checked_path = rdir / "checked.txt"
     checked_lines = rc.read_checked(checked_path)
     vis_lines, done, stale = visual_section(visuals, checked_lines, checked_path.name, "matches the page")
@@ -1243,7 +1259,8 @@ def main(argv=None) -> int:
     ap.add_argument("--no-markitdown", action="store_true")
     ap.add_argument("--no-pandoc", action="store_true")
     ap.add_argument("--no-apply", action="store_true",
-                    help="report only; do not fold safe exact-match fixes (equations, links, bold) into the primary")
+                    help="report only; do not fold safe exact-match fixes (equations, links, bold, Word's "
+                         "paragraph numbers) into the primary")
     ap.add_argument("--fresh", action="store_true",
                     help="regenerate the .md from the file even if one exists (a plain rerun keeps your edits)")
     ap.add_argument("--uml", choices=["mermaid", "plantuml", "both"], default="mermaid",

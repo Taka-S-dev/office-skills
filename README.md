@@ -94,6 +94,14 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
 ### Word の仕様書をエージェント向けの md にする
 
 変換そのものは `office2md.py` で済むが、「最も正確な 1 本」を作るときは `md_crosscheck.py` を使う。
+確かめる深さは 3 段階（時間は 48 ページの文書で測った目安）。
+
+| 段階 | コマンド | 確かめること | 時間 |
+|---|---|---|---|
+| 本文だけ | `office2md.py 仕様書.docx` | なし（変換のみ） | 1 秒未満 |
+| 標準 | `md_crosscheck.py 仕様書.docx --no-render` | pandoc / markitdown との照合、リンク、画像、取り消し線 | 約 3 秒 |
+| 忠実 | `md_crosscheck.py 仕様書.docx` | 加えて Word で印刷したページ、Word の段落番号との照合 | 約 14 秒（2 回目からは約 2 秒） |
+
 
 1. `md_crosscheck.py 仕様書.docx --out-dir ./md` を実行。`仕様書.md`（自前変換。見出しの自動番号、脚注、
    変更履歴の印（`{++追加++}` `{--削除--}`）とコメントの位置、
@@ -105,6 +113,7 @@ python office-edit/scripts/pdf_tool.py bookmarks 仕様書.pdf --set toc.txt --o
    pandoc などの変換結果、印刷した PDF、照合結果の `review.md`、確認の記録は `仕様書_review/` にまとまる
    （以前の版が md の隣に置いたファイルも、次の実行でここに移る）。
 2. 数式の LaTeX 化、太字、リンクのうち、一意に当たるものはツールが自動で `仕様書.md` に取り込む。
+   Word で印刷できたときは、段落番号が Word の表示と違う行（その文が 1 行だけにあるもの）を Word の番号に直す。
    `review.md` の先頭に `Status: READY` か `NEEDS REVIEW` と、検査ごとの結果（ok / FAIL / not run）が出る。
    検査は、md がどの版のファイルから作られたか、参照側にあって自前に無い文（同じ文が何回出るかも数える）、
    リンク、見出し、表の形、目視確認（中身のある図、図形で描いた図、SmartArt、グラフ、埋め込みオブジェクト）。

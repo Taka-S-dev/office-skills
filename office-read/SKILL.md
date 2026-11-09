@@ -78,7 +78,8 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    `仕様書.md` from office2md (automatic heading numbers, notes, figures with alt text, text
    boxes, links), converts the same file with pandoc (and markitdown) when they are installed,
    folds in the safe fixes by itself (an equation as LaTeX, a bold phrase, a link, each only on
-   an exact single match), and writes the review. Only `仕様書.md` and its figures
+   an exact single match, and where Word printed the document, Word's own number on a numbered
+   line that has another one), and writes the review. Only `仕様書.md` and its figures
    (`仕様書_figures/`) stay in the output folder; everything else (the reference conversions,
    the printed PDF, the review, `checked.txt`, `rounds.jsonl`) goes to `仕様書_review/` (a name over 48 characters is cut to its first 40 and a short
    hash, to stay inside Windows' path limit), and files
@@ -138,6 +139,19 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    ```bash
    python <skill>/scripts/md_crosscheck.py "仕様書.docx" --out-dir ./md
    ```
+
+   **How thorough to be.** Three levels, the same files at each; pick by what the result is for
+   (times measured on a 48-page document):
+
+   | Level | Command | Checks | Time |
+   |---|---|---|---|
+   | Text | `office2md.py FILE` | none: the conversion alone | under 1 s |
+   | Standard | `md_crosscheck.py FILE --no-render` | against pandoc / markitdown, links, pictures, struck text | about 3 s |
+   | Full | `md_crosscheck.py FILE` | also against the page as Word prints it, and each paragraph number against Word's | about 14 s, about 2 s on a rerun |
+
+   Text is enough to read or search a document. Use Standard or Full when the Markdown replaces
+   the document for someone else (a specification handed to another agent); Full is the only
+   level that can say the Markdown matches what Word shows. Report which level was run.
 
    **The same command works for Excel** (`md_crosscheck.py 仕様書.xlsx --out-dir ./md`), with
    different references, because no converter reads a workbook better than office2md. The

@@ -529,6 +529,9 @@ def main() -> int:
             "assert miss == [('(3)', '三番目の項目', '- 三番目の項目')], miss",
             "assert m.emphasis('<strong>「重要」</strong>と**必須**') == ['「重要」', '必須']",
             "assert m._head_key('面積 m<sup>2</sup>') == m._head_key('面積 m^2^')",
+            # a heading bold as a whole in a reference (# **1. 概要**) is the same heading, not a bold phrase
+            "assert m._head_key('**1. 基本情報**') == m._head_key('1. 基本情報')",
+            "assert m.emphasis('# **1. 基本情報**\\n本文の**必須**項目') == ['必須']",
             "(t / 'x.checked').write_text('accept a b', encoding='utf-8'); (t / 'x_review').mkdir()",
             "rd = m.review_dir(t, 'x')",
             "assert (rd / 'checked.txt').read_text(encoding='utf-8') == 'accept a b' and not (t / 'x.checked').exists()",
@@ -546,6 +549,12 @@ def main() -> int:
             "assert rc.pandoc_order('![](C:/a b/x_review/pandoc_media/media/image2.png){width=1in}\\n![](C:/a b/media/image1.emf)') == ['image2.png', 'image1.emf']",
             # [必須](全角) in body text is no link to a file
             "assert rc.local_links('氏名[必須](全角) 区分[A](1) ![p](<x y.png>) [f](docs/a)') == [(True, 'x y.png'), (False, 'docs/a')]",
+            # Word's number replaces another one on a line found once; a line repeated in a table is left as it is
+            "md = '## 第２章 本文の全体像\\n\\n- (4) 組織の成長の視点\\n\\n| (a) 組織の成長の視点 |\\n\\n1. 番号付きの段落の本文'",
+            "nums = [('第１章　', '本文の全体像', '4'), ('(5)', '組織の成長の視点', '4'), ('2.', '番号付きの段落の本文', '3')]",
+            "out, k = rc.apply_numbers(nums, md)",
+            "assert k == 2 and '## 第１章 本文の全体像' in out and '2. 番号付きの段落の本文' in out and '- (4) 組織' in out, out",
+            "assert rc.numbering_misses(nums, out) == [('(5)', '組織の成長の視点', '- (4) 組織の成長の視点')]",
             "import office2md, io",
             "from PIL import Image",
             "buf = io.BytesIO(); Image.new('CMYK', (4, 3)).save(buf, 'TIFF')",
