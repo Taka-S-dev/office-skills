@@ -268,6 +268,24 @@ def main() -> int:
               all(x in o for x in ["  - 受付\n  - 審査\n    - 書類確認\n  - 承認", "旧形式の注記: 単位は mm",
                                    "## Chart sheet: グラフ専用", "数量の推移", "Printed header: 文書番号 DOC-001 第2版",
                                    "~~旧品番~~"]) and "表示用" not in o, o)
+        check("xlsx shows numbers as formatted (a negative in brackets, a unit in the format), one struck word, page fields",
+              all(x in o for x in ["| 割引 | (1,200) | ~~旧単価~~ 新単価 |", "| 件数 | 5件 |",
+                                   "Printed footer: [page] / [pages] ページ", "(2 cell(s): B4, C5)"]), o)
+        code = "\n".join([
+            "from office2md import format_number as f",
+            "assert f(1200, '\"\\\\\"#,##0') == '¥1,200' and f(0, '#,##0;-#,##0;\"-\"') == '-'",
+            "assert f(1234567, '#,##0,') == '1,235' and f(1200, 'General') == 1200 and f(-5, '0') == '-5'",
+            # an empty section hides, a weekday code keeps the serial, conditions pick the section,
+            # half rounds up, leading zeros stay, a negative General stays a number
+            "assert f(-5, '0;;') == '' and f(45000, 'aaa') == 45000 and f(-1.5, 'General') == -1.5",
+            "assert f(500, '[>=100]\"big\";0') == 'big' and f(5, '[>=100]\"big\";0') == '5'",
+            "assert f(1234.5, '#,##0') == '1,235' and f(12, '00000') == '00012'",
+            "assert f(0, '_(\"$\"* #,##0_);_(\"$\"* (#,##0);_(\"$\"* \"-\"??_);_(@_)') == '$-'",
+            "print('FORMAT OK')"])
+        o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                           cwd=ROOT / "office-read" / "scripts")
+        check("xlsx number formats: yen written with a backslash, a zero section, thousands scaling, General kept",
+              "FORMAT OK" in o.stdout, o.stdout + o.stderr)
         run(xc, ob, "--out-dir", d / "xo", "--no-render")
         rv = (d / "xo" / "objects.review.md").read_text(encoding="utf-8")
         check("SmartArt and the chart sheet become visual checks", "`部品#smartart1@" in rv and "`グラフ専用#chart1@" in rv

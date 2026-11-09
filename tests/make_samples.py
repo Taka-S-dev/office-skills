@@ -547,6 +547,15 @@ for row in [["品名", "数量", "状態"], ["ボルト", 2, "○"], ["ナット
     ws.append(row)
 ws["B4"].font = Font(strike=True)
 ws.oddHeader.center.text = "文書番号 DOC-001 第2版"
+# a negative shown in brackets, a unit written into the format, a cell with one word struck, and
+# the page fields of a printed footer
+from openpyxl.cell.rich_text import CellRichText, TextBlock
+from openpyxl.cell.text import InlineFont
+ws.append(["割引", -1200, CellRichText([TextBlock(InlineFont(strike=True), "旧単価"), " 新単価"])])
+ws["B5"].number_format = "#,##0;(#,##0)"
+ws.append(["件数", 5])
+ws["B6"].number_format = '0"件"'
+ws.oddFooter.right.text = "&P / &N ページ"
 cs = ow.create_chartsheet("グラフ専用")
 bar = BarChart()
 bar.title = "数量の推移"

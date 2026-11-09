@@ -272,6 +272,8 @@ def format_value(v: Any, fmt: str | None) -> Any:
         return v
     if isinstance(v, bool):
         return "TRUE" if v else "FALSE"
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return format_number(v, fmt or "General")
     fmt = (fmt or "General").split(";")[0]
     fmt_clean = re.sub(r"\[[^\]]*\]|\"[^\"]*\"|\\.", "", fmt).strip()
 
@@ -313,26 +315,132 @@ def format_value(v: Any, fmt: str | None) -> Any:
         out.append(low[i:])
         return "".join(out)
 
-    if isinstance(v, (int, float)):
-        if fmt_clean in ("", "General") or "@" in fmt_clean:
-            return v if isinstance(v, int) else float(f"{v:.10g}") if abs(v) < 1e15 else v
-        if "E" in fmt_clean.upper() and "0" in fmt_clean:
-            dec = len(fmt_clean.split(".")[1].split("E")[0]) if "." in fmt_clean else 0
-            return f"{v:.{dec}E}"
-        dec = 0
-        if "." in fmt_clean:
-            dec = len(re.match(r"[0#?]*", fmt_clean.split(".", 1)[1]).group(0))
-        if "%" in fmt_clean:
-            return f"{v * 100:,.{dec}f}%" if "," in fmt_clean else f"{v * 100:.{dec}f}%"
-        body = f"{v:,.{dec}f}" if "," in fmt_clean else f"{v:.{dec}f}"
-        sym = ""
-        m = re.search(r"\[\$([^\-\]]*)", fmt) or re.search(r"([¥$€£])", fmt)
-        if m:
-            sym = m.group(1)
-        if fmt_clean.startswith("(") and v < 0:
-            body = f"({body.lstrip('-')})"
-        return f"{sym}{body}" if sym else body
     return v
+
+
+def _format_tokens(sec: str) -> list[tuple[bool, str]]:
+    """A number-format section as (is_literal, text) pieces. Code is 0 # ? . , % E+ @ and General;
+    quoted text, backslash-escaped characters and [$¥-411] currency are literal; colours,
+    conditions, _x padding and *x fill are dropped."""
+    out: list[tuple[bool, str]] = []
+    i = 0
+    while i < len(sec):
+        c = sec[i]
+        if c == '"':
+            j = sec.find('"', i + 1)
+            j = len(sec) if j < 0 else j
+            out.append((True, sec[i + 1:j]))
+            i = j + 1
+        elif c == "\\" and i + 1 < len(sec):
+            out.append((True, sec[i + 1]))
+            i += 2
+        elif c == "[":
+            j = sec.find("]", i)
+            j = len(sec) if j < 0 else j
+            m = re.match(r"\[\$([^\-\]]*)", sec[i:j + 1])
+            if m and m.group(1):
+                out.append((True, m.group(1)))
+            i = j + 1
+        elif c in "_*":
+            i += 2
+        elif sec[i:i + 7].lower() == "general":
+            out.append((False, "G"))
+            i += 7
+        elif c in "0#?.,%@":
+            out.append((False, c))
+            i += 1
+        elif c in "Ee" and i + 1 < len(sec) and sec[i + 1] in "+-":
+            out.append((False, "E"))
+            i += 2
+        else:
+            out.append((True, c))
+            i += 1
+    return out
+
+
+def format_number(v: int | float, fmt: str) -> int | float | str:
+    """A number as Excel shows it: the section for negatives (#,##0;(#,##0) gives (1,200)) and for
+    zero ("-"), the text around the digits (0"件" gives 5件, "¥"#,##0 gives ¥1,200), a percent,
+    decimals, thousands separators and scaling by trailing commas. General stays a number."""
+    from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+    secs, cur, quoted, i = [], "", False, 0       # split on ; outside quotes, keeping empty sections
+    while i < len(fmt):
+        c = fmt[i]
+        if c == "\\" and not quoted and i + 1 < len(fmt):
+            cur += fmt[i:i + 2]
+            i += 2
+            continue
+        if c == '"':
+            quoted = not quoted
+        if c == ";" and not quoted:
+            secs.append(cur)
+            cur = ""
+        else:
+            cur += c
+        i += 1
+    secs.append(cur)
+    general = v if isinstance(v, int) else float(f"{v:.10g}") if abs(v) < 1e15 else v
+    cond = [re.search(r"\[(<=|>=|<>|<|>|=)\s*(-?[\d.]+)\]", s) for s in secs]
+    sign = ""
+    if any(cond):
+        # [>=100]"big";[<0]"neg";0: the first section whose condition holds, else the one without
+        ops = {"<": lambda a, b: a < b, ">": lambda a, b: a > b, "=": lambda a, b: a == b, "<=": lambda a, b: a <= b,
+               ">=": lambda a, b: a >= b, "<>": lambda a, b: a != b}
+        pick = next((k for k, m in enumerate(cond) if m and ops[m[1]](v, float(m[2]))), None)
+        if pick is None:
+            pick = next((k for k, m in enumerate(cond) if not m), len(secs) - 1)
+        sec, x = secs[pick], abs(v)
+        sign = "-" if v < 0 and not cond[pick] else ""
+    elif v < 0 and len(secs) > 1:
+        sec, x = secs[1], -v                  # the section shows the sign its own way, if at all
+    elif v == 0 and len(secs) > 2:
+        sec, x = secs[2], v
+    else:
+        sec, x = secs[0], abs(v)
+        sign = "-" if v < 0 else ""
+    if not sec:                               # an empty section hides the value (0;; hides negatives)
+        return ""
+    toks = _format_tokens(sec)
+    code = "".join(t for lit, t in toks if not lit)
+    if not code:
+        # bare letters with no digit place are a date or weekday code on a number (aaa): leave it;
+        # quoted text alone is what the cell shows ("-" for zero)
+        if re.search(r"[A-Za-z]", re.sub(r'"[^"]*"|\\.|\[[^\]]*\]', "", sec)):
+            return general
+        return "".join(t for _, t in toks)
+    first = next(k for k, (lit, _) in enumerate(toks) if not lit)
+    last = max(k for k, (lit, _) in enumerate(toks) if not lit)
+    # a lone backslash is the yen sign: Japanese Excel writes its currency formats with it
+    lit = lambda part: "".join("¥" if t == "\\" else t for _, t in part)  # noqa: E731
+    prefix, suffix = lit(toks[:first]), lit(toks[last + 1:])
+    if "G" in code or "@" in code:
+        if not prefix and not suffix:
+            return general
+        body = f"{x:.10g}"
+    elif "E" in code:
+        dec = len(re.match(r"[0#?]*", code.split(".", 1)[1]).group(0)) if "." in code.split("E")[0] else 0
+        body = f"{x:.{dec}E}"
+    else:
+        whole = code.split(".", 1)[0].replace("%", "")
+        x = x / 1000 ** (len(whole) - len(whole.rstrip(",")))      # #,##0, shows thousands
+        dec = len(re.match(r"[0#?]*", code.split(".", 1)[1]).group(0)) if "." in code else 0
+        if "%" in code:
+            x *= 100
+        try:                                  # Excel rounds half up, not to even
+            q = Decimal(repr(x)).quantize(Decimal(1).scaleb(-dec), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
+            q = x
+        body = f"{q:,.{dec}f}" if re.search(r",+[0#?]", whole) else f"{q:.{dec}f}"
+        head, dot, tail = body.partition(".")
+        zeros = whole.count("0")              # 00000 keeps five digits; # and ? show no lone zero
+        if head.replace(",", "") == "0" and not zeros:
+            head = ""
+        elif zeros and len(head.replace(",", "")) < zeros:
+            head = head.zfill(zeros) if "," not in head else head
+        body = head + dot + tail
+        if "%" in code:
+            body += "%"
+    return f"{sign}{prefix}{body}{suffix}"
 
 
 def profile_dirs(extra: list[Path] | None = None) -> list[Path]:
@@ -885,6 +993,7 @@ class XlsxHandler(Handler):
             formulas_cached = 0
             uncached_addrs: list[str] = []
             struck: list[str] = []           # cells drawn with a strikethrough: usually "deleted in this revision"
+            struck_parts: dict[str, str] = {}  # cells with only some words struck: address -> text with ~~marks~~
             hidden_rows, hidden_cols = self._hidden(ws)
 
             for r_idx, row in enumerate(ws.iter_rows(), start=1):
@@ -913,6 +1022,8 @@ class XlsxHandler(Handler):
                                          "text": cell.comment.text})
                     if val is not None and val != "" and cell.has_style and cell.font is not None and cell.font.strike:
                         struck.append(cell.coordinate)
+                    elif isinstance(val, str) and val in self._struck_runs():
+                        struck_parts[cell.coordinate] = self._struck_runs()[val]
                     if val is not None and val != "":
                         cells.append({"address": cell.coordinate, "value": raw if raw is not None else val,
                                       "display": val, "formula": fval if is_formula else None,
@@ -939,7 +1050,7 @@ class XlsxHandler(Handler):
                 "formulas_shown": formulas_seen,
                 "formulas_cached": formulas_cached,
                 "uncached_formulas": uncached_addrs,
-                "struck": struck,
+                "struck": struck, "struck_parts": struck_parts,
                 "header_footer": self._header_footer(ws),
                 **self._sheet_extras(ws, model.get(ws.title, {}), cells, xlsx_drawing),
                 "form": self._form_pairs(ws, fws) if self.opts.form else [],
@@ -957,6 +1068,20 @@ class XlsxHandler(Handler):
             Path(self.opts.drawio).write_text(xlsx_drawing.drawio_file(self._drawio_pages), encoding="utf-8")
         return {"file": str(self.path), "type": "xlsx", "sheets": sheets, "chart_sheets": chart_sheets}
 
+    _HF_FIELDS = {"P": "[page]", "N": "[pages]", "D": "[date]", "T": "[time]", "F": "[file]", "A": "[sheet]",
+                  "Z": "[folder]", "G": "[picture]"}
+
+    @staticmethod
+    def _hf_fields(t: str) -> str:
+        """Header / footer text with its fields named (&P is the page number, &N the page count,
+        &F the file name, &A the sheet) and its formatting codes (font, size, bold) dropped."""
+        t = t.replace("&&", "")                       # && is a literal &, kept apart first
+        t = re.sub(r'&"[^"]*"', "", t)                      # font name
+        t = re.sub(r"&\d+", "", t)                          # font size
+        t = re.sub(r"&K[0-9A-Fa-f]{6}|&K\d{2}[+-]\d{3}", "", t)   # colour
+        t = re.sub(r"&([A-Za-z])", lambda m: XlsxHandler._HF_FIELDS.get(m[1].upper(), ""), t)
+        return t.replace("", "&").strip()
+
     @staticmethod
     def _header_footer(ws) -> list[str]:
         """Printed header / footer text (document number, revision, confidentiality)."""
@@ -968,7 +1093,7 @@ class XlsxHandler(Handler):
             for pos in ("left", "center", "right"):
                 t = getattr(getattr(hf, pos, None), "text", None)
                 if t and t.strip():
-                    parts.append(re.sub(r"&[A-Za-z]|&\d+|&\"[^\"]*\"", "", t).strip())
+                    parts.append(XlsxHandler._hf_fields(t))
             parts = [x for x in parts if x]
             if parts:
                 out.append(f"{label}: " + " | ".join(parts))
@@ -1063,16 +1188,63 @@ class XlsxHandler(Handler):
     def _mark_struck(s: dict) -> dict:
         """A copy of the sheet with struck-through cells written as ~~text~~ in every view."""
         hit = set(s["struck"])
+        parts = s.get("struck_parts", {})
         rows = [list(r) for r in s["rows"]]
-        for addr in hit:
+        for addr in hit | set(parts):
             m = re.match(r"([A-Z]+)(\d+)$", addr)
             if not m:
                 continue
             r, c = int(m.group(2)) - 1, openpyxl_col(m.group(1)) - 1
             if r < len(rows) and c < len(rows[r]) and rows[r][c] not in (None, ""):
-                rows[r][c] = f"~~{rows[r][c]}~~"
-        cells = [{**c, "display": f"~~{c['display']}~~"} if c["address"] in hit else c for c in s["cells"]]
+                rows[r][c] = parts.get(addr) or f"~~{rows[r][c]}~~"
+        cells = [{**c, "display": f"~~{c['display']}~~"} if c["address"] in hit
+                 else {**c, "display": parts[c["address"]]} if c["address"] in parts else c for c in s["cells"]]
         return {**s, "rows": rows, "cells": cells}
+
+    def _struck_runs(self) -> dict[str, str]:
+        """Rich text with struck runs, as plain text -> text with ~~marks~~ (openpyxl reads a
+        cell's text without its runs, and the cell's own font has no strike when only runs do).
+        A text written two ways is left out: which cell holds which cannot be told from the value."""
+        if getattr(self, "_struck_cache", None) is not None:
+            return self._struck_cache
+        from lxml import etree
+        out: dict[str, str] = {}
+        ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        # rich text sits in the shared strings (Excel) or inline in a sheet (other writers)
+        texts = []
+        parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+        try:
+            with zipfile.ZipFile(self.path) as z:
+                parts = {n: z.read(n) for n in z.namelist()
+                         if n == "xl/sharedStrings.xml" or re.fullmatch(r"xl/worksheets/[^/]+\.xml", n)}
+            if any(b"strike" in raw for raw in parts.values()):
+                for name, raw in parts.items():
+                    # all shared strings (an unstruck copy of a text makes it ambiguous), and the
+                    # inline strings of the sheets that strike something
+                    if name.endswith("sharedStrings.xml"):
+                        texts += etree.fromstring(raw, parser).iter(ns + "si")
+                    elif b"strike" in raw:
+                        texts += etree.fromstring(raw, parser).iter(ns + "is")
+        except (zipfile.BadZipFile, OSError, etree.XMLSyntaxError):
+            texts = []
+        clash: set[str] = set()
+        unstruck: set[str] = set()
+        for si in texts:
+            runs = []
+            for r in si.findall(ns + "r"):
+                text = "".join(t.text or "" for t in r.findall(ns + "t"))
+                st = r.find(ns + "rPr/" + ns + "strike")
+                runs.append((text, st is not None and st.get("val", "1") not in ("0", "false")))
+            if not any(s for t, s in runs if t.strip()):   # a struck space is no visible line
+                unstruck.add("".join(t for t, _ in runs) if runs else "".join(t.text or "" for t in si.findall(ns + "t")))
+                continue
+            plain = "".join(t for t, _ in runs)
+            marked = "".join(f"~~{t}~~" if s and t.strip() else t for t, s in runs).replace("~~~~", "")
+            if out.get(plain, marked) != marked:
+                clash.add(plain)
+            out[plain] = marked
+        self._struck_cache = {k: v for k, v in out.items() if k not in clash and k not in unstruck}
+        return self._struck_cache
 
     def _grid(self, rows: list[list[Any]], hidden_rows=(), hidden_cols=()) -> str:
         """Markdown table with Excel's column letters as header and row numbers as first column,
@@ -1125,7 +1297,7 @@ class XlsxHandler(Handler):
             return "\n".join(out)
 
         for s in data["sheets"]:
-            if s.get("struck"):
+            if s.get("struck") or s.get("struck_parts"):
                 s = self._mark_struck(s)
             flag = "" if s["state"] == "visible" else f"  _({s['state']})_"
             out.append(f"## Sheet: {md_escape(re.sub(r'[\x00-\x1f\x7f]', ' ', s['name']))}{flag}")
@@ -1145,9 +1317,10 @@ class XlsxHandler(Handler):
                            "file, not on the screen. Mention them when they carry data.")
             for hf in s.get("header_footer", []):
                 out.append(f"Printed {md_escape(hf)}")
-            if s.get("struck"):
-                shown = ", ".join(s["struck"][:20]) + (" …" if len(s["struck"]) > 20 else "")
-                out.append(f"> Struck-through text is shown as ~~text~~ ({len(s['struck'])} cell(s): {shown}). "
+            marked = list(s.get("struck", [])) + list(s.get("struck_parts", {}))
+            if marked:
+                shown = ", ".join(marked[:20]) + (" …" if len(marked) > 20 else "")
+                out.append(f"> Struck-through text is shown as ~~text~~ ({len(marked)} cell(s): {shown}). "
                            "In a revised specification this usually marks a deletion; do not read it as current.")
             unc = s["uncached_formulas"]
             if unc:
