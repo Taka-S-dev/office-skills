@@ -66,6 +66,8 @@ pwlist*.txt
 *.vsdx
 *.drawio
 *.png
+*.emf
+*.wmf
 *.jpg
 *.jpeg
 *.vsdm
