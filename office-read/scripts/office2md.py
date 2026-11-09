@@ -1660,7 +1660,7 @@ class DocxHandler(Handler):
         # a style inherits the list and the level separately: "Clause 4" may set only its level
         # and take the list from "Clause 3" it is based on, so each comes from the nearest style
         # that sets it
-        style = paragraph.style
+        style = self._pstyle(paragraph)
         seen = 0
         lvl = None
         while style is not None and seen < 10:
@@ -1678,7 +1678,7 @@ class DocxHandler(Handler):
                     if nid.get(W("val")) == "0":
                         return None                  # numbering switched off for this style
                     return nid.get(W("val")), lvl or 0
-            style = style.base_style
+            style = self._base(style)
             seen += 1
         return None
 
@@ -2367,14 +2367,38 @@ try {
             self._comment_cache = {c["id"]: c for c in self._comments()}
         return self._comment_cache
 
+    # python-docx looks a style up by scanning every style on each call (to find the default when a
+    # paragraph names none); a 3 MB document spent 77 of 89 s there. Each lookup is done once.
+    def _style(self, style_id, kind):
+        cache = self.__dict__.setdefault("_style_cache", {})
+        if (style_id, kind) not in cache:
+            cache[(style_id, kind)] = self._doc.part.get_style(style_id, kind)
+        return cache[(style_id, kind)]
+
+    def _pstyle(self, paragraph):
+        from docx.enum.style import WD_STYLE_TYPE
+        return self._style(paragraph._p.style, WD_STYLE_TYPE.PARAGRAPH)
+
+    def _rstyle(self, run):
+        from docx.enum.style import WD_STYLE_TYPE
+        return self._style(run._r.style, WD_STYLE_TYPE.CHARACTER)
+
+    def _base(self, style):
+        cache = self.__dict__.setdefault("_base_cache", {})
+        key = style.style_id
+        if key not in cache:
+            cache[key] = style.base_style
+        return cache[key]
+
     def _style_name(self, paragraph) -> str:
         try:
-            return (paragraph.style.name or "") if paragraph.style else ""
+            style = self._pstyle(paragraph)
+            return (style.name or "") if style else ""
         except Exception:
             return ""
 
     def _heading_level(self, paragraph) -> int:
-        style = paragraph.style
+        style = self._pstyle(paragraph)
         seen = 0
         while style is not None and seen < 10:
             name = style.name or ""
@@ -2383,7 +2407,7 @@ try {
                 return int(m[1])
             if name in ("Title", "表題"):
                 return 1
-            style = style.base_style
+            style = self._base(style)
             seen += 1
         return 0
 
@@ -2477,8 +2501,9 @@ try {
         runs = [r for r in paragraph.runs if r.text.strip()]
         if not runs:
             return False
-        style_bold = bool(paragraph.style is not None and paragraph.style.font.bold)
-        return all(r.bold or (r.bold is None and (style_bold or (r.style is not None and r.style.font.bold)))
+        pstyle = self._pstyle(paragraph)
+        style_bold = bool(pstyle is not None and pstyle.font.bold)
+        return all(r.bold or (r.bold is None and (style_bold or ((rs := self._rstyle(r)) is not None and rs.font.bold)))
                    for r in runs)
 
     def _has_header(self, table) -> bool:
