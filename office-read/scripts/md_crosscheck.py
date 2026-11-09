@@ -213,6 +213,7 @@ def _head_key(h: str) -> str:
     marks (as sentences are, but kept whole however short: "概要" is a heading)."""
     h = radicals(NUM_PREFIX.sub("", h.strip())).translate(_WIDE_DIGITS)
     h = re.sub(r"\^([^^\s]{1,20})\^", r"\1", h)            # pandoc superscript: 1^st^ is 1st
+    h = INLINE_TAG.sub("", h)                               # office2md's <sup>, <mark>, <strong>
     h = re.sub(r"[“”\"‘’'*_`\\]", "", h)
     return re.sub(r"[\s　]+", "", h) or h.strip()
 
@@ -255,7 +256,9 @@ def links(md: str) -> dict[str, str]:
 
 
 def emphasis(md: str) -> list[str]:
-    return [m.strip() for m in re.findall(r"\*\*([^*\n]{2,80})\*\*", md) if m.strip()]
+    # office2md writes bold beside punctuation as <strong>, where ** would not render
+    return [m.strip() for m in re.findall(r"\*\*([^*\n]{2,80})\*\*|<strong>([^<\n]{2,80})</strong>", md)
+            for m in m if m.strip()]
 
 
 def equations(md: str) -> list[str]:
@@ -402,7 +405,7 @@ def apply_safe(primary: str, refs: dict[str, str]) -> tuple[str, dict[str, int]]
             if hits and phrase.strip() in whole and lines[hits[0]].strip().strip("*").strip() != phrase.strip():
                 continue
             if len(hits) == 1 and lines[hits[0]].count(phrase) == 1 and f"**{phrase}**" not in lines[hits[0]] \
-                    and "](" not in lines[hits[0]]:
+                    and f"<strong>{phrase}</strong>" not in lines[hits[0]] and "](" not in lines[hits[0]]:
                 lines[hits[0]] = lines[hits[0]].replace(phrase, f"**{phrase}**")
                 stats["bold"] += 1
     return "\n".join(lines), stats

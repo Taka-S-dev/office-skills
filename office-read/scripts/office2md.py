@@ -84,6 +84,31 @@ def md_para(text: str) -> str:
     return "\n".join(out)
 
 
+def plain_marks(text: str) -> str:
+    """Text without the emphasis office2md writes, for tests on what a line says or starts with."""
+    return re.sub(r"(?<!\\)(?:\*\*|\*|~~)|</?(?:strong|em|mark|sup|sub|u|del)>", "", text)
+
+
+# full-width katakana to the half-width forms Word uses for the aiueo and iroha numberings
+_HALF_KANA = dict(zip("アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンヰヱ",
+                      "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝｲｴ"))
+
+
+def whole_unbold(text: str) -> str:
+    """Text without bold that covers all of it (**text** or <strong>text</strong>), else as it is."""
+    s = text.strip()
+    m = re.fullmatch(r"\*\*(.+)\*\*|<strong>(.+)</strong>", s, re.S)
+    inner = (m[1] if m[1] is not None else m[2]) if m else None
+    if inner is None or re.search(r"(?<!\\)\*\*|</?strong>", inner):
+        return text
+    return inner
+
+
+def unbold(text: str) -> str:
+    """Text for a line written bold as a whole: bold inside it would close the line's own **."""
+    return re.sub(r"(?<!\\)\*\*|</?strong>", "", text)
+
+
 def md_escape(value: Any) -> str:
     """Make a cell safe for a Markdown table."""
     if value is None:
@@ -211,6 +236,27 @@ def metafile_png(blob: bytes, trim: bool = False) -> bytes | None:
         return buf.getvalue()
     except Exception:  # noqa: BLE001 - Pillow raises many kinds; any failure keeps the metafile
         return None
+
+
+def viewable_picture(blob: bytes, ext: str) -> tuple[bytes, str, str]:
+    """A picture in a form a Markdown viewer shows: EMF and WMF drawn, TIFF re-encoded, as PNG.
+    Returns (bytes, extension, the original extension when converted, else "")."""
+    ext = (ext or "").lower()
+    png = None
+    if ext in ("emf", "wmf"):
+        png = metafile_png(blob)
+    elif ext in ("tif", "tiff"):
+        try:
+            from PIL import Image
+            im = Image.open(io.BytesIO(blob))
+            if im.mode not in ("1", "L", "LA", "P", "RGB", "RGBA"):
+                im = im.convert("RGBA")          # CMYK and 16-bit TIFFs: PNG has no such mode
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+            png = buf.getvalue()
+        except Exception:  # noqa: BLE001 - a TIFF Pillow cannot read stays as it is
+            png = None
+    return (png, "png", ext) if png else (blob, "jpg" if ext == "jpeg" else ext, "")
 
 
 _SPACED = re.compile(r"[぀-ヿ一-鿿々〆](?:[ 　]+[぀-ヿ一-鿿々〆]){1,7}")
@@ -737,11 +783,12 @@ class XlsxHandler(Handler):
                     out_dir = Path(out_dir)
                     out_dir.mkdir(parents=True, exist_ok=True)
                     self._fig_n += 1
+                    blob, ext, _ = viewable_picture(sh["blob"], sh["media_ext"])
                     for attempt in range(1000):
-                        target = out_dir / f"figure-{self._fig_n:03d}{'' if attempt == 0 else f'-{attempt}'}.{sh['media_ext']}"
+                        target = out_dir / f"figure-{self._fig_n:03d}{'' if attempt == 0 else f'-{attempt}'}.{ext}"
                         try:
                             with open(target, "xb") as f:
-                                f.write(sh["blob"])
+                                f.write(blob)
                             break
                         except FileExistsError:
                             continue
@@ -1538,6 +1585,13 @@ class DocxHandler(Handler):
     def _load_numbering(self, doc) -> None:
         """numId -> {ilvl: {fmt, text, start}} from numbering.xml, with per-num overrides."""
         self._num: dict[str, dict[int, dict]] = {}
+        # Word counts every num that names one abstractNum as one list (a num reaching it through
+        # a list style is another list). A num that overrides a level's start ("restart at 1")
+        # restarts, where it is first used, that level and the ones below it; a parent goes on.
+        # Checked against Word's own numbers on public documents and the test fixtures.
+        self._num_abs: dict[str, str] = {}
+        self._num_restart: dict[str, set[int]] = {}
+        self._num_used: set[str] = set()
         try:
             root = doc.part.numbering_part.element
         except Exception:
@@ -1562,17 +1616,33 @@ class DocxHandler(Handler):
                     "start": clamp(st.get(W("val"))) if st is not None else 1}
 
         abstract: dict[str, dict[int, dict]] = {}
+        style_link: dict[str, str] = {}              # list style name -> the abstractNum defining it
+        num_link: dict[str, str] = {}                # abstractNum -> list style it only points to
         for an in root.findall(W("abstractNum")):
-            levels = {int(l.get(W("ilvl"))): parse_lvl(l) for l in an.findall(W("lvl"))}
-            abstract[an.get(W("abstractNumId"))] = levels
+            aid = an.get(W("abstractNumId"))
+            levels = {clamp(l.get(W("ilvl")), 0): parse_lvl(l) for l in an.findall(W("lvl"))}
+            abstract[aid] = levels
+            for tag, into in (("styleLink", style_link), ("numStyleLink", None)):
+                el = an.find(W(tag))
+                if el is not None and el.get(W("val")):
+                    if into is not None:
+                        style_link[el.get(W("val"))] = aid
+                    else:
+                        num_link[aid] = el.get(W("val"))
         for num in root.findall(W("num")):
             ref = num.find(W("abstractNumId"))
-            levels = {k: dict(v) for k, v in abstract.get(ref.get(W("val")) if ref is not None else "", {}).items()}
+            named = ref.get(W("val")) if ref is not None else ""
+            aid = style_link.get(num_link.get(named, ""), named)   # a list style: its definition's levels
+            levels = {k: dict(v) for k, v in abstract.get(aid, {}).items()}
+            nid = num.get(W("numId"))
+            if named:
+                self._num_abs[nid] = "a" + named
             for ov in num.findall(W("lvlOverride")):
-                il = int(ov.get(W("ilvl")) or 0)
+                il = clamp(ov.get(W("ilvl")), 0)
                 so = ov.find(W("startOverride"))
                 if so is not None and il in levels:
-                    levels[il]["start"] = int(so.get(W("val")))
+                    levels[il]["start"] = clamp(so.get(W("val")))
+                    self._num_restart.setdefault(nid, set()).add(il)
                 lv = ov.find(W("lvl"))
                 if lv is not None:
                     levels[il] = parse_lvl(lv)
@@ -1587,20 +1657,27 @@ class DocxHandler(Handler):
             il = pPr.numPr.ilvl.val if pPr.numPr.ilvl is not None else 0
             if nid is not None:
                 return (str(nid), max(0, min(8, int(il)))) if str(nid) != "0" else None   # OOXML allows ilvl 0..8
+        # a style inherits the list and the level separately: "Clause 4" may set only its level
+        # and take the list from "Clause 3" it is based on, so each comes from the nearest style
+        # that sets it
         style = paragraph.style
         seen = 0
+        lvl = None
         while style is not None and seen < 10:
             spPr = style.element.find(W("pPr"))
             np_ = spPr.find(W("numPr")) if spPr is not None else None
             if np_ is not None:
                 nid = np_.find(W("numId"))
                 il = np_.find(W("ilvl"))
-                if nid is not None and nid.get(W("val")) != "0":
+                if lvl is None and il is not None:
                     try:
-                        lvl = max(0, min(8, int(il.get(W("val"))))) if il is not None else 0
-                    except ValueError:
-                        lvl = 0
-                    return nid.get(W("val")), lvl
+                        lvl = max(0, min(8, int(il.get(W("val")))))
+                    except (TypeError, ValueError):
+                        pass
+                if nid is not None:
+                    if nid.get(W("val")) == "0":
+                        return None                  # numbering switched off for this style
+                    return nid.get(W("val")), lvl or 0
             style = style.base_style
             seen += 1
         return None
@@ -1640,15 +1717,14 @@ class DocxHandler(Handler):
                 tens, ones = divmod(n, 10)
                 return ("" if tens == 1 else digits[tens]) + "十" + (digits[ones] if ones else "")
             return str(n)
-        if fmt == "aiueo":
-            kana = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
-            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
-        if fmt == "aiueoFullWidth":
-            kana = "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん"
-            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
-        if fmt == "iroha":
-            kana = "イロハニホヘトチリヌルヲワカヨタレソツネナラムウヰノオクヤマケフコエテアサキユメミシヱヒモセス"
-            return kana[n - 1] if 1 <= n <= len(kana) else str(n)
+        if fmt in ("aiueo", "aiueoFullWidth", "iroha", "irohaFullWidth"):
+            kana = ("アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン"
+                    if fmt.startswith("aiueo") else
+                    "イロハニホヘトチリヌルヲワカヨタレソツネナラムウヰノオクヤマケフコエテアサキユメミシヱヒモセス")
+            if not 1 <= n <= len(kana):
+                return str(n)
+            # the plain formats are half-width (ｱ ｲ ｳ), as Word shows them
+            return kana[n - 1] if fmt.endswith("FullWidth") else _HALF_KANA.get(kana[n - 1], kana[n - 1])
         if fmt == "none":
             return ""
         return str(n)
@@ -1661,7 +1737,12 @@ class DocxHandler(Handler):
         levels = self._num.get(nid)
         if not levels or il not in levels:
             return None, False
-        cnt = self._counters.setdefault(nid, {})
+        cnt = self._counters.setdefault(self._num_abs.get(nid, nid), {})
+        if nid not in self._num_used:
+            self._num_used.add(nid)
+            for k in self._num_restart.get(nid, ()):
+                if k >= il:
+                    cnt.pop(k, None)             # counts again from the override's start
         cnt[il] = cnt.get(il, levels[il]["start"] - 1) + 1
         for k in [k for k in cnt if k > il]:
             del cnt[k]
@@ -1731,11 +1812,7 @@ class DocxHandler(Handler):
                    "image/svg+xml": "svg", "image/webp": "webp"}.get(ctype)
             converted = ""
             if out_dir and ext:
-                blob = rel.target_part.blob
-                if ext in ("emf", "wmf"):
-                    png = metafile_png(blob)
-                    if png:
-                        blob, converted, ext = png, ext, "png"
+                blob, ext, converted = viewable_picture(rel.target_part.blob, ext)
                 saved = self._save_picture(blob, ext, f"figure-{len(self._images) + 1:03d}")
             dims = self._image_dims(rel.target_part.blob) if not rel.is_external else None
         else:
@@ -2056,7 +2133,7 @@ try {
                 if rt is not None:
                     self._collect(rt, reading, boxes, depth)
                 # the run around the ruby carries its formatting; marks inside would split ｜base《reading》
-                b, r = (re.sub("[-]", "", "".join(x)).strip() for x in (base, reading))
+                b, r = (re.sub(self.MARK_CHARS, "", "".join(x)).strip() for x in (base, reading))
                 parts.append(f"｜{b}《{r}》" if b and r else b)
             elif tag in (W + "footnoteReference", W + "endnoteReference"):
                 # the number the reader sees: notes are numbered in the order they are referenced,
@@ -2119,20 +2196,29 @@ try {
                 inner = []
                 self._collect(child, inner, boxes, depth)
                 text = "".join(inner)
-                marks = self._run_marks(child) if text.strip() else ""
+                # a note number Word raises by direct formatting stays a plain [^n]
+                marks = (self._run_marks(child) if text.strip()
+                         and not re.fullmatch(r"\s*\[\^[^\]]*\]\s*", text) else "")
                 # open and close marks, made Markdown once the paragraph is whole (_inline_marks)
                 parts.append("".join(self._MARKS[k][0] for k in marks) + text
                              + "".join(self._MARKS[k][1] for k in reversed(marks)))
             else:
                 self._collect(child, parts, boxes, depth)
 
-    # strike, italic, underline: (open, close) stand-ins and the Markdown each becomes
-    _MARKS = {"s": ("", "", "~~", "~~"), "i": ("", "", "*", "*"),
-              "u": ("", "", "<u>", "</u>")}
+    # run formatting: (open, close) stand-ins while the paragraph is assembled, and the Markdown
+    # each becomes once it is whole (_inline_marks)
+    _MARKS = {"b": ("", "", "**", "**"), "s": ("", "", "~~", "~~"),
+              "i": ("", "", "*", "*"), "u": ("", "", "<u>", "</u>"),
+              "h": ("", "", "<mark>", "</mark>"), "p": ("", "", "<sup>", "</sup>"),
+              "d": ("", "", "<sub>", "</sub>")}
+    # the tag a mark becomes where its Markdown would not render (beside punctuation)
+    _MARK_TAGS = {"b": "strong", "s": "del", "i": "em"}
+    MARK_CHARS = "[-]"
 
     def _run_marks(self, run) -> str:
-        """Formatting set directly on a run: s strikethrough (w:strike, w:dstrike), i italic, u
-        underline. Only direct formatting: a link's underline comes from its character style."""
+        """Formatting set directly on a run: b bold, s strikethrough (w:strike, w:dstrike), i italic,
+        u underline, h highlight, p superscript, d subscript. Only direct formatting: a link's
+        underline and a note number's raised position come from their character styles."""
         rpr = run.find(self._q("w", "rPr"))
         if rpr is None:
             return ""
@@ -2140,18 +2226,33 @@ try {
         def on(name: str, off=("0", "false", "off")) -> bool:
             el = rpr.find(self._q("w", name))
             return el is not None and (el.get(self._q("w", "val")) or "true").lower() not in off
-        return ("s" if on("strike") or on("dstrike") else "") + ("i" if on("i") else "") + \
-               ("u" if on("u", ("none", "0", "false", "off")) else "")
+        va = rpr.find(self._q("w", "vertAlign"))
+        va = (va.get(self._q("w", "val")) or "") if va is not None else ""
+        return (("b" if on("b") else "") + ("s" if on("strike") or on("dstrike") else "")
+                + ("i" if on("i") else "") + ("u" if on("u", ("none", "0", "false", "off")) else "")
+                + ("h" if on("highlight", ("none",)) else "")
+                + ("p" if va == "superscript" else "d" if va == "subscript" else ""))
 
     @classmethod
-    def _inline_marks(cls, text: str) -> str:
+    def _inline_marks(cls, text: str, whole_bold: bool = False) -> str:
         """The run marks as Markdown: neighbouring runs with the same formatting join into one
         span (Word splits a phrase into many runs), and spaces at a span's edge move outside it
-        (*word * is no emphasis)."""
-        if not re.search("[-]", text):
+        (*word * is no emphasis). Bold over the whole text is dropped unless whole_bold: in a
+        table cell or a text box it is the layout's look (every header cell bold), while a body
+        paragraph keeps it (a bold warning) and its caller decides (a bold line, a heading)."""
+        if not re.search(cls.MARK_CHARS, text):
             return text
-        for o, c, _, _ in cls._MARKS.values():
-            text = text.replace(c + o, "")
+        prev = None
+        while prev != text:              # runs with two marks close and reopen in layers
+            prev = text
+            for o, c, _, _ in cls._MARKS.values():
+                text = text.replace(c + o, "")
+        bo, bc = cls._MARKS["b"][:2]
+        others = "".join(o + c for k, (o, c, _, _) in cls._MARKS.items() if k != "b")
+        core = text.strip(" \t\n　" + others)
+        if not whole_bold and core.startswith(bo) and core.endswith(bc) and core.count(bo) == 1:
+            text = text.replace(bo, "").replace(bc, "")
+
         def span(m, mo: str, mc: str, tag: str) -> str:
             if not m[2]:
                 return m[1] + m[3]
@@ -2164,12 +2265,14 @@ try {
                 return bool(ch) and not ch.isspace() and not punct(ch)
             before = m.string[m.start() - 1] if m.start() and not m[1] else ""
             after = m.string[m.end()] if m.end() < len(m.string) and not m[3] else ""
-            edge = (punct(m[2][0]) and word(before)) or (punct(m[2][-1]) and word(after))
+            seen = re.sub(cls.MARK_CHARS, "", m[2]) or m[2]
+            edge = (punct(seen[0]) and word(before)) or (punct(seen[-1]) and word(after))
             if edge and tag:
                 mo, mc = f"<{tag}>", f"</{tag}>"
             return f"{m[1]}{mo}{m[2]}{mc}{m[3]}"
         import unicodedata
-        for (o, c, mo, mc), tag in zip(cls._MARKS.values(), ("del", "em", "")):
+        for k, (o, c, mo, mc) in cls._MARKS.items():
+            tag = cls._MARK_TAGS.get(k, "")
             text = re.sub(re.escape(o) + r"(\s*)(.*?)(\s*)" + re.escape(c),
                           lambda m, mo=mo, mc=mc, tag=tag: span(m, mo, mc, tag), text, flags=re.S)
         return text
@@ -2231,7 +2334,7 @@ try {
         boxes: list[str] = []
         self._collect(paragraph._p, parts, boxes)
         # Word splits one edit into many runs: "{++令和８年８月3++}{++1++}{++日++}" reads as one insertion
-        text = self._inline_marks("".join(parts).replace("++}{++", "").replace("--}{--", ""))
+        text = self._inline_marks("".join(parts).replace("++}{++", "").replace("--}{--", ""), whole_bold=True)
         # shapes placed one by one around the same paragraph make one figure
         marks = [b for b in boxes if b.startswith(self.DRAW_MARK)]
         if len(marks) > 1:
@@ -2253,7 +2356,7 @@ try {
         """Remember a tracked change for the list at the end (one entry per change id)."""
         W = lambda n: self._q("w", n)  # noqa: E731
         cid = el.get(W("id")) or str(len(self._changes))
-        text = re.sub("[-]", "", text)          # run marks: the list shows the words
+        text = re.sub(self.MARK_CHARS, "", text)          # run marks: the list shows the words
         if cid in self._changes or not text.strip():
             return
         self._changes[cid] = {"kind": kind, "author": re.sub(r"\s+", " ", el.get(W("author")) or "").strip()[:80],
@@ -2339,6 +2442,7 @@ try {
             if child.tag == W("p"):
                 p = Paragraph(child, cell)
                 text, boxes = self._para(p)
+                text = whole_unbold(text)          # a bold header cell is the table's look
                 label, bullet = self._label(self._num_pr(p))
                 text = close_spaced(text.strip())
                 if text:
@@ -2483,23 +2587,27 @@ try {
                 toc_run = 0
             text, boxes = self._para(obj)
             text = close_spaced(text.strip())
-            label, bullet = self._label(self._num_pr(obj))
+            # an empty paragraph that only carries a section break takes no number in Word
+            sect_only = not text and not boxes and obj._p.pPr is not None and obj._p.pPr.find(self._q("w", "sectPr")) is not None
+            label, bullet = (None, False) if sect_only else self._label(self._num_pr(obj))
             lvl = self._heading_level(obj)
             one_line = re.sub(r"\s+", " ", text)      # headings, list items and captions are single lines
             if text:
                 if lvl or self._is_caption(obj) or bullet or label is not None:
                     text = one_line
                 promoted = False
-                if not lvl and label is None and not bullet and self._looks_like_subheading(obj, text):
+                if not lvl and label is None and not bullet and self._looks_like_subheading(obj, plain_marks(text)):
                     lvl, promoted = min(6, last_level + 1), True
-                elif (not lvl and label is None and not bullet and last_head and _next_circled(last_head[1], text)
+                elif (not lvl and label is None and not bullet and last_head
+                      and _next_circled(plain_marks(last_head[1]), plain_marks(text))
                       and self._all_bold(obj)):
                     lvl = last_head[0]           # "**④ title**" typed bold after the "③ title" heading
                 if lvl:
                     if not promoted:
                         last_level = lvl         # siblings （１）（２） all sit one below the real heading
                     last_head = (lvl, (label + " " if label else "") + text)    # ③ may be list numbering
-                    blocks.append({"kind": "heading", "level": lvl, "label": label or "", "text": text,
+                    # a heading is bold already; bold inside it is only how it was typed
+                    blocks.append({"kind": "heading", "level": lvl, "label": label or "", "text": unbold(text),
                                    **({"promoted": True} if promoted else {})})
                 elif self._is_caption(obj):
                     blocks.append({"kind": "caption", "text": (label + " " if label else "") + text})
@@ -2616,7 +2724,7 @@ try {
                 else:
                     # deeper than ######, which Markdown does not go past: a bold line, its number kept
                     # a typed * is already escaped, so * left in the text is the heading's own emphasis
-                    bold = md_para(head)
+                    bold = md_para(unbold(head))
                     out.append("**" + (bold[1:] if bold.startswith("\\") and not bold.startswith("\\*") else bold) + "**")
             elif k == "list":
                 indent = "  " * b.get("level", 0)
@@ -2634,7 +2742,7 @@ try {
                     out += [f"Table: {md_para(b['caption'])}", ""]     # the title set in Table Properties > Alt Text
                 # a one-column table under its caption ("表3-7 ...") is a table the text refers to, not a box
                 captioned = i > 0 and (blocks[i - 1]["kind"] == "caption" or (
-                    blocks[i - 1]["kind"] == "para" and re.match(r"(?:表|Table)\s?[0-9０-９]", blocks[i - 1]["text"])))
+                    blocks[i - 1]["kind"] == "para" and re.match(r"(?:表|Table)\s?[0-9０-９]", plain_marks(blocks[i - 1]["text"]))))
                 out += render_word_table(b["rows"], b.get("header", True), keep_table=captioned)
             elif k == "textbox":
                 out.append("> **Text box:** " + md_para(b["text"]).replace("\n", "\n> "))
@@ -2648,7 +2756,7 @@ try {
             elif k == "toc":
                 out.append(f"_{b['text']}; the headings below are the live structure._")
             elif b.get("bold"):
-                para = md_para(b["text"])        # md_para's own escape goes; a typed \* stays escaped
+                para = md_para(unbold(b["text"]))  # md_para's own escape goes; a typed \* stays escaped
                 out.append("**" + (para[1:] if para.startswith("\\") and not para.startswith("\\*") else para) + "**")
             else:
                 out.append(md_para(b["text"]).replace("\n", "  \n"))
@@ -2764,8 +2872,11 @@ class PptxHandler(Handler):
             out_dir = Path(out_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
             self._fig_n = getattr(self, "_fig_n", 0) + 1
+            blob, ext, converted = viewable_picture(blob, ext)
+            if converted:
+                info["converted_from"] = converted
             for attempt in range(1000):
-                target = out_dir / f"figure-{self._fig_n:03d}{'' if attempt == 0 else f'-{attempt}'}.{'jpg' if ext == 'jpeg' else ext}"
+                target = out_dir / f"figure-{self._fig_n:03d}{'' if attempt == 0 else f'-{attempt}'}.{ext}"
                 try:
                     with open(target, "xb") as f:
                         f.write(blob)

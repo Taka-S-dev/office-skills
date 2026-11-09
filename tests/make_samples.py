@@ -925,6 +925,18 @@ idoc.add_paragraph("*1 本書は*2を参照")          # typed note marks, not e
 qp = idoc.add_paragraph("これは")
 qp.add_run("「重要」").italic = True          # emphasis beside brackets: written as a tag
 qp.add_run("です。")
+fp = idoc.add_paragraph("面積は10 m")             # raised, lowered, bold and highlighted runs
+fp.add_run("2").font.superscript = True
+fp.add_run("、水はH")
+fp.add_run("2").font.subscript = True
+fp.add_run("Oで、")
+fp.add_run("必須").bold = True
+fp.add_run("の欄と")
+fp.add_run("要確認").font.highlight_color = docx.enum.text.WD_COLOR_INDEX.YELLOW
+fp.add_run("の欄。")
+bp = idoc.add_paragraph()                       # bold as a whole: a bold line, not bold inside one
+for piece in ("全体が太字の", "短い行"):
+    bp.add_run(piece).bold = True
 lt = idoc.add_table(rows=1, cols=3)
 lt.cell(0, 0).text = "補 装 具"
 lt.cell(0, 1).text = "車いす"
@@ -940,6 +952,68 @@ cap = idoc.add_paragraph()
 cap.add_run().add_picture(io.BytesIO(png))
 cap.add_run("図1 構成の説明")
 idoc.save(out / "inline.docx")
+
+# --- numbering.docx: two nums of one list (the second restarts it), kana numbers, bold labels ---
+from docx.oxml import parse_xml as _px                                   # noqa: E402
+ndoc = docx.Document()
+W_DECL = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+numbering = ndoc.part.numbering_part.element
+for k, (aid, fmt, text) in enumerate([("90", "decimal", "[%1]"), ("91", "aiueoFullWidth", "%1"), ("92", "aiueo", "%1)")]):
+    numbering.insert(k, _px(f'<w:abstractNum {W_DECL} w:abstractNumId="{aid}"><w:lvl w:ilvl="0"><w:start w:val="1"/>'
+                            f'<w:numFmt w:val="{fmt}"/><w:lvlText w:val="{text}"/></w:lvl></w:abstractNum>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="901"><w:abstractNumId w:val="90"/></w:num>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="902"><w:abstractNumId w:val="90"/>'
+                     '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="903"><w:abstractNumId w:val="91"/></w:num>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="904"><w:abstractNumId w:val="92"/></w:num>'))
+
+
+def numbered(text, nid):
+    para = ndoc.add_paragraph(text)
+    para._p.get_or_add_pPr().append(_px(f'<w:numPr {W_DECL}><w:ilvl w:val="0"/><w:numId w:val="{nid}"/></w:numPr>'))
+
+
+for text, nid in [("一番目の項目", 901), ("二番目の項目", 901), ("三番目の項目", 901),
+                  ("振り直した項目", 902), ("続きの項目", 901), ("カナの一つ目", 903), ("カナの二つ目", 903),
+                  ("半角カナの項目", 904)]:
+    numbered(text, nid)
+sp = ndoc.add_paragraph()                       # "（１）" typed bold: still a subsection heading
+sp.add_run("（１）").bold = True
+sp.add_run("概要について")
+cp = ndoc.add_paragraph()                       # a caption typed with its number in bold
+cp.add_run("表1").bold = True
+cp.add_run(" 一覧の説明")
+ct = ndoc.add_table(rows=2, cols=1)
+ct.cell(0, 0).text = "区分の名前"
+ct.cell(1, 0).text = "区分の値"
+# a clause list as legal templates build it: the styles carry the numbering, the levels name
+# styles (lvl/pStyle), which Word does not use for a style that sets no level, a style may set
+# only its level and inherit the list, and the definition sits behind a list style
+# (numStyleLink -> styleLink)
+numbering.insert(3, _px(
+    f'<w:abstractNum {W_DECL} w:abstractNumId="93"><w:styleLink w:val="ClauseList"/>'
+    '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Clause1"/><w:lvlText w:val="%1."/></w:lvl>'
+    '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Clause2"/><w:lvlText w:val="%1.%2"/></w:lvl>'
+    '<w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="(%3)"/></w:lvl></w:abstractNum>'))
+numbering.insert(4, _px(f'<w:abstractNum {W_DECL} w:abstractNumId="94"><w:numStyleLink w:val="ClauseList"/></w:abstractNum>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="905"><w:abstractNumId w:val="94"/></w:num>'))
+numbering.append(_px(f'<w:num {W_DECL} w:numId="906"><w:abstractNumId w:val="93"/>'
+                     '<w:lvlOverride w:ilvl="1"><w:startOverride w:val="1"/></w:lvlOverride>'
+                     '<w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>'))
+styles = ndoc.styles.element
+for sid, based, numpr in (("Clause1", None, '<w:numId w:val="905"/>'), ("Clause2", "Clause1", ""),
+                          ("Clause3", "Clause1", '<w:ilvl w:val="2"/>')):
+    styles.append(_px(f'<w:style {W_DECL} w:type="paragraph" w:styleId="{sid}"><w:name w:val="{sid}"/>'
+                      + (f'<w:basedOn w:val="{based}"/>' if based else "")
+                      + (f'<w:pPr><w:numPr>{numpr}</w:numPr></w:pPr>' if numpr else "") + '</w:style>'))
+for text, sid in (("Definitions", "Clause1"), ("Obligations", "Clause1"), ("The first duty", "Clause2"),
+                  ("The second duty", "Clause2"), ("an inherited item", "Clause3")):
+    ndoc.add_paragraph(text, style=sid)
+# names the definition directly, not through the list style: a list of its own, so it reads 1.1
+numbered("A sub clause started again", 906)
+nested = ndoc.paragraphs[-1]._p.pPr.numPr
+nested.ilvl.val = 1
+ndoc.save(out / "numbering.docx")
 
 # emf.docx (Windows only: the metafile is drawn with GDI): a picture saved as EMF, which most
 # Markdown viewers cannot show

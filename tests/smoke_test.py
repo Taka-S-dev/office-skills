@@ -445,7 +445,19 @@ def main() -> int:
               all(x in o for x in ["通常の文 *斜体の語*と<u>下線の語</u>と~~削除した語~~",
                                    "> Header: 見出しの行 / 社外秘 / 文書番号 / A-001", "\n申請書\n", "| 補装具 | 車いす | 男　女 |",
                                    "no visual content)]  \n図1 構成の説明", "\\*1 本書は\\*2を参照",
-                                   "これは<em>「重要」</em>です。"]), o)
+                                   "これは<em>「重要」</em>です。",
+                                   "面積は10 m<sup>2</sup>、水はH<sub>2</sub>Oで、**必須**の欄と<mark>要確認</mark>の欄。",
+                                   "\n**全体が太字の短い行**\n"]), o)
+        o = run(READ, d / "numbering.docx")
+        check("docx: lists of one definition count together and a restart restarts them; kana numbers as Word shows "
+              "them; a bold （１） is still a subsection; a bold 表1 still captions its table",
+              all(x in o for x in ["[3] 三番目の項目", "[1] 振り直した項目", "[2] 続きの項目", "ア カナの一つ目",
+                                   "イ カナの二つ目", "ｱ) 半角カナの項目", "## （１）概要について", "| 区分の名前 |"]), o)
+        # each expectation is what Word shows for the same file (its ListString)
+        check("docx: a style without a level is level 1, a level inherited apart from its list, a list style's "
+              "definition, and a restart first used at level 2",
+              all(x in o for x in ["1. Definitions", "2. Obligations", "3. The first duty", "4. The second duty",
+                                   "(a) an inherited item", "- 1.1 A sub clause started again"]), o)
         o = run(READ, d / "drawings.docx", "--outline")
         check("docx outline counts the drawings", "· 3 drawings ·" in o, o)
         if sys.platform == "win32":
@@ -493,6 +505,13 @@ def main() -> int:
             "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",
             "                        {'r': '**（１）管理項目について**\\n\\n**大切な語**を含む文\\n'})",
             "assert '**（１）' not in fixed and '**大切な語**を含む文' in fixed, fixed",  # a heading's bold stays off its index copy
+            "assert m.emphasis('<strong>「重要」</strong>と**必須**') == ['「重要」', '必須']",
+            "assert m._head_key('面積 m<sup>2</sup>') == m._head_key('面積 m^2^')",
+            "import office2md, io",
+            "from PIL import Image",
+            "buf = io.BytesIO(); Image.new('CMYK', (4, 3)).save(buf, 'TIFF')",
+            "blob, ext, was = office2md.viewable_picture(buf.getvalue(), 'tif')",
+            "assert (ext, was) == ('png', 'tif') and Image.open(io.BytesIO(blob)).size == (4, 3)",
             "print('AGENT LOOP OK')"])
         o = subprocess.run([PY, "-X", "utf8", "-c", code], capture_output=True, text=True, encoding="utf-8",
                            cwd=ROOT / "office-read" / "scripts")

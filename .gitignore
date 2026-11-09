@@ -80,6 +80,12 @@ pwlist*.txt
 *.odt
 *.ods
 *.odp
+*.tif
+*.tiff
+*.gif
+*.bmp
+*.svg
+*.webp
 
 # Organisation-specific profiles stay local; only the README and template are published.
 /office-read/profiles/*.md
