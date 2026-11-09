@@ -42,7 +42,8 @@ MS Project の .mpp を読むには、次のどちらかが要る（無くても
 
 どちらで読んだかは出力の `Read with:` 行に出る。
 
-コピー先は既定で `~/.claude/skills`。別のエージェントを使う場合は引数でそのスキルフォルダを渡す。
+コピー先は既定で `~/.claude/skills` と、GitHub Copilot のフォルダ（`~/.copilot`）があれば `~/.copilot/skills`。
+それ以外のエージェントを使う場合は引数でそのスキルフォルダを渡す（そのときはそこだけにコピーする）。
 
 ```powershell
 .\install.ps1 C:\path\to\your-agent\skills
