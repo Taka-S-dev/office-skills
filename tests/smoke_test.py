@@ -212,19 +212,19 @@ def main() -> int:
         run(xc, rich, "--out-dir", d / "xr", "--no-render")
         bm = (d / "xr" / "seq_rich.md").read_text(encoding="utf-8")
         (d / "xr" / "seq_rich.md").write_text(bm.replace("    end\n    Note over P3", "    Note over P3", 1), encoding="utf-8")
-        (d / "xr" / "seq_rich.checked").write_text("シーケンス2#diagram ok\n", encoding="utf-8")
+        (d / "xr" / "seq_rich_review" / "checked.txt").write_text("シーケンス2#diagram ok\n", encoding="utf-8")
         run(xc, rich, "--out-dir", d / "xr", "--no-render")
-        rv = (d / "xr" / "seq_rich.review.md").read_text(encoding="utf-8")
+        rv = (d / "xr" / "seq_rich_review" / "review.md").read_text(encoding="utf-8")
         check("cross-check refuses READY while a diagram block is broken",
               "NEEDS REVIEW" in rv and "## Diagram problems" in rv and "never closed" in rv and (d / "xr" / "seq_rich.drawio").exists(), rv)
         o = run(xc, dg, "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("xlsx cross-check: nothing missing, 4 visual checks open",
               "[ok] Text: " in rv and "Visual checks: 0 of 4 confirmed" in rv and "NEEDS REVIEW" in rv, rv)
         ids = re.findall(r"`([^`]+@[0-9a-f]{8})`", rv.split("## Visual checks", 1)[1])
-        (d / "xx" / "diagram.checked").write_text("シーケンス#diagram ok\nグラフ#chart1@00000000 ok\n", encoding="utf-8")
+        (d / "xx" / "diagram_review" / "checked.txt").write_text("シーケンス#diagram ok\nグラフ#chart1@00000000 ok\n", encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("visual check ids match exactly, with the content fingerprint (no prefix, no old id)",
               "Visual checks: 0 of 4 confirmed, 2 recorded for content that has since changed" in rv, rv[:1500])
         dio_text = (d / "xx" / "diagram.drawio").read_text(encoding="utf-8")
@@ -232,20 +232,20 @@ def main() -> int:
         md = (d / "xx" / "diagram.md").read_text(encoding="utf-8")
         (d / "xx" / "diagram.md").write_text(md.replace("日付 [B4:I4, 8 cols]", ""), encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("xlsx cross-check catches text dropped from the Markdown", "- レイアウト!B4: 日付" in rv, rv)
         (d / "xx" / "diagram.md").write_text(md, encoding="utf-8")
-        (d / "xx" / "diagram.checked").write_text("".join(f"{i}  looked at the rendered sheet\n" for i in ids),
+        (d / "xx" / "diagram_review" / "checked.txt").write_text("".join(f"{i}  looked at the rendered sheet\n" for i in ids),
                                                     encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("xlsx cross-check READY once text is complete and visual checks are recorded", "**Status: READY**" in rv, rv)
         # an edited mermaid arrow is listed against the reconstruction
         m = re.search(r"^(\s*)(\w+)->>(\w+): (.+)$", md, re.M)
         (d / "xx" / "diagram.md").write_text(
             md.replace(m.group(0), f"{m.group(1)}{m.group(3)}->>{m.group(2)}: {m.group(4)}", 1), encoding="utf-8")
         run(xc, dg, "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("a reversed arrow in the Markdown is listed as an edit of the reconstruction",
               "## Diagram edits since the reconstruction (1)" in rv and "the drawing had it the other way" in rv, rv)
         (d / "xx" / "diagram.md").write_text(md, encoding="utf-8")
@@ -256,7 +256,7 @@ def main() -> int:
                 b = zin.read(n)
                 zout.writestr(n, b.replace("在庫数".encode(), "在庫件数".encode()) if n == "xl/drawings/drawing91.xml" else b)
         run(xc, d / "v2" / "diagram.xlsx", "--out-dir", d / "xx", "--no-render")
-        rv = (d / "xx" / "diagram.review.md").read_text(encoding="utf-8")
+        rv = (d / "xx" / "diagram_review" / "review.md").read_text(encoding="utf-8")
         check("a changed workbook makes the Markdown stale and reopens only the changed visual check",
               "[FAIL] Source: the Markdown was made from another version" in rv
               and "Visual checks: 3 of 4 confirmed, 1 recorded" in rv and "- [ ] `シーケンス#diagram@" in rv
@@ -287,14 +287,14 @@ def main() -> int:
         check("xlsx number formats: yen written with a backslash, a zero section, thousands scaling, General kept",
               "FORMAT OK" in o.stdout, o.stdout + o.stderr)
         run(xc, ob, "--out-dir", d / "xo", "--no-render")
-        rv = (d / "xo" / "objects.review.md").read_text(encoding="utf-8")
+        rv = (d / "xo" / "objects_review" / "review.md").read_text(encoding="utf-8")
         check("SmartArt and the chart sheet become visual checks", "`部品#smartart1@" in rv and "`グラフ専用#chart1@" in rv
               and "[ok] Text: " in rv, rv[:2000])
         om = (d / "xo" / "objects.md").read_text(encoding="utf-8")
         (d / "xo" / "objects.md").write_text(om.replace("| 未定 |", "|  |", 1).replace("| ボルト | 2 |", "| ボルト | 3 |"),
                                              encoding="utf-8")
         run(xc, ob, "--out-dir", d / "xo", "--no-render")
-        rv = (d / "xo" / "objects.review.md").read_text(encoding="utf-8")
+        rv = (d / "xo" / "objects_review" / "review.md").read_text(encoding="utf-8")
         check("text check catches one of two equal values removed and a short number changed",
               "未定 (2 times in the sheet, 1 in its section)" in rv
               and "- 部品!B2: 2 (not found on a line with its row label 'ボルト')" in rv, rv[:2500])
@@ -320,7 +320,7 @@ def main() -> int:
         check("spec.docx keeps hyperlink URLs", "[注文 API 仕様 v3](https://example.com/spec/order-api-v3)" in o, o)
         if shutil.which("pandoc"):
             o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
-            rv = (d / "xc" / "spec.review.md").read_text(encoding="utf-8")
+            rv = (d / "xc" / "spec_review" / "review.md").read_text(encoding="utf-8")
             pm = (d / "xc" / "spec.md").read_text(encoding="utf-8")
             check("md_crosscheck: nothing in pandoc missing from the primary",
                   "## Content in pandoc not found in the primary (0)" in rv and (d / "xc" / "spec.md").exists(), o + rv)
@@ -328,30 +328,41 @@ def main() -> int:
                   "$$" in pm and "**30日以内に入荷**" in pm and "**Status: " in rv and "Applied automatically" in rv, rv + pm)
             check("md_crosscheck: READY when only a reference's dropped title differs",
                   "**Status: READY**" in rv, rv)
+            check("md_crosscheck: only the Markdown and its figures beside it; references, renders and review in _review/",
+                  sorted(x.name for x in (d / "xc").iterdir()) == ["spec.md", "spec_figures", "spec_review"]
+                  and "[ok] Pictures and links: 0 broken or not viewable." in rv
+                  and (d / "xc" / "spec_review" / "pandoc.md").exists(), str(list((d / "xc").iterdir())) + rv)
             check("md_crosscheck: figure as an image link relative to the .md with forward slashes, size shown",
                   "![データの全体構成図](spec_figures/figure-001.png) _(1x1, placeholder image, no visual content)_" in pm, pm)
-            (d / "xc" / "spec.md").write_text(pm + "\n手で追記した行。\n", encoding="utf-8")
+            (d / "xc" / "spec.md").write_text(pm.replace("spec_figures/figure-001.png", "spec_figures/gone.png")
+                                              + "\n手で追記した行。\n", encoding="utf-8")
             o = run(ROOT / "office-read" / "scripts" / "md_crosscheck.py", spec, "--out-dir", d / "xc", "--no-markitdown")
             check("md_crosscheck: a rerun keeps manual edits",
                   "reusing existing spec.md" in o and "手で追記した行。" in (d / "xc" / "spec.md").read_text(encoding="utf-8"), o)
+            rv = (d / "xc" / "spec_review" / "review.md").read_text(encoding="utf-8")
+            check("md_crosscheck: a picture link to a missing file blocks READY",
+                  "## Links to files that do not exist (1)" in rv and "` spec_figures/gone.png" in rv
+                  and "NEEDS REVIEW" in rv, rv[:3000])
             od = d / "objects.docx"
             run(xc, od, "--out-dir", d / "xd", "--no-markitdown", "--no-render")
-            rv = (d / "xd" / "objects.review.md").read_text(encoding="utf-8")
+            rv = (d / "xd" / "objects_review" / "review.md").read_text(encoding="utf-8")
             check("Word SmartArt and embedded object are visual checks; content check passes",
                   "`smartart1@" in rv and "`embedded1@" in rv and "[ok] Content against pandoc" in rv
                   and "NEEDS REVIEW" in rv, rv[:2500])
             wm = (d / "xd" / "objects.md").read_text(encoding="utf-8")
             rep = "応答がない場合は三回まで再送する。"
             cut = wm.rindex(rep)
-            wm2 = wm[:cut] + wm[cut + len(rep):]
+            wm2 = (wm[:cut] + wm[cut + len(rep):]).replace("~~旧仕様では再送しない。~~", "旧仕様では再送しない。")
             wm2 = wm2.replace("終了要求の後は再送しない。\n", "").replace(
                 "送信の前に状態を確認する。\n", "送信の前に状態を確認する。\n\n終了要求の後は再送しない。\n")
             (d / "xd" / "objects.md").write_text(wm2, encoding="utf-8")
             run(xc, od, "--out-dir", d / "xd", "--no-markitdown", "--no-render")
-            rv = (d / "xd" / "objects.review.md").read_text(encoding="utf-8")
+            rv = (d / "xd" / "objects_review" / "review.md").read_text(encoding="utf-8")
             check("Word cross-check catches a repeated sentence lost and lists one moved to another heading",
                   "1 repeated fewer times" in rv and "(2 times in pandoc, 1 in the primary)" in rv
                   and "## Content under a different heading than in pandoc (1)" in rv, rv[:3000])
+            check("Word cross-check catches struck-through marks lost from the Markdown",
+                  "## Struck-through text lost" in rv and "marks 0 with ~~...~~" in rv, rv[:3000])
         else:
             print("  [skip] md_crosscheck (pandoc not installed)")
         o = run(READ, d / "objects.docx")
@@ -505,8 +516,36 @@ def main() -> int:
             "fixed, _ = m.apply_safe('#### （１）管理項目について\\n\\n索引の行 （１）管理項目について\\n\\n大切な語を含む文\\n',",
             "                        {'r': '**（１）管理項目について**\\n\\n**大切な語**を含む文\\n'})",
             "assert '**（１）' not in fixed and '**大切な語**を含む文' in fixed, fixed",  # a heading's bold stays off its index copy
+            # the Markdown's own links, struck text, pictures and numbers against the file
+            "t = Path(tempfile.mkdtemp()); (t / 'fig').mkdir(); (t / 'fig' / 'x.png').write_bytes(b'x'); (t / 'fig' / 'y.emf').write_bytes(b'x')",
+            "lc = rc.link_check('![a](fig/x.png) ![b](fig/y.emf) [c](https://e.com/x) [d](#top) ![e](<fig/sp ace.png>)', t)",
+            "assert lc == {'broken': ['fig/sp ace.png'], 'unviewable': ['fig/y.emf']}, lc",
+            "assert rc.md_struck_chars('~~削除 した語~~と<del>旧</del>') == 6",
+            f"assert rc.docx_struck_chars(Path({str(d / 'inline.docx')!r})) == 5",
+            "assert rc.order_moves(['a', 'b', 'c', 'd'], ['a', 'c', 'd', 'b']) == ['b']",
+            "assert rc.picture_count('![x](a.png)\\n[figure: y]\\n[drawing: 2 shapes]\\n![drawing: c](d.png)') == 4",
+            "miss = rc.numbering_misses([('1.2', '概要の説明'), ('・', '箇条の項目'), ('(3)', '三番目の項目')], "
+            "'## 1.2 概要の説明\\n\\n- 三番目の項目\\n')",
+            "assert miss == [('(3)', '三番目の項目', '- 三番目の項目')], miss",
             "assert m.emphasis('<strong>「重要」</strong>と**必須**') == ['「重要」', '必須']",
             "assert m._head_key('面積 m<sup>2</sup>') == m._head_key('面積 m^2^')",
+            "(t / 'x.checked').write_text('accept a b', encoding='utf-8'); (t / 'x_review').mkdir()",
+            "rd = m.review_dir(t, 'x')",
+            "assert (rd / 'checked.txt').read_text(encoding='utf-8') == 'accept a b' and not (t / 'x.checked').exists()",
+            "(rd / 'review.md').write_text('new', encoding='utf-8'); (t / 'x.review.md').write_text('old', encoding='utf-8')",
+            "(t / 'x_pages').mkdir(); m.review_dir(t, 'x')",
+            "assert (rd / 'review.md').read_text(encoding='utf-8') == 'new' and (t / 'x.review.md').exists()",  # never over a file
+            "assert (t / 'x_pages').exists() and not (rd / 'pages').exists()",       # a folder that is not ours stays
+            # bullets in a symbol font or by Word's list type are no numbers
+            "assert rc.numbering_misses([('o', '二段目の箇条', '5'), ('l', '別の箇条の項目'), ('1.', '番号の段落です', '3')],"
+            " '  - 二段目の箇条\\n- 別の箇条の項目\\n- 番号の段落です\\n') == [('1.', '番号の段落です', '- 番号の段落です')]",
+            "assert rc.numbering_misses([('2', '箇条にした項目', '1')], '- 箇条にした項目') == []",
+            # struck text over a line break, with an escaped star and an underscore, counts every character
+            "assert rc.md_struck_chars('~~old_value \\\\*1~~ ~~一行目  \\n二行目~~') == 17",
+            # pandoc's media path with a space in it
+            "assert rc.pandoc_order('![](C:/a b/x_review/pandoc_media/media/image2.png){width=1in}\\n![](C:/a b/media/image1.emf)') == ['image2.png', 'image1.emf']",
+            # [必須](全角) in body text is no link to a file
+            "assert rc.local_links('氏名[必須](全角) 区分[A](1) ![p](<x y.png>) [f](docs/a)') == [(True, 'x y.png'), (False, 'docs/a')]",
             "import office2md, io",
             "from PIL import Image",
             "buf = io.BytesIO(); Image.new('CMYK', (4, 3)).save(buf, 'TIFF')",

@@ -78,21 +78,33 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    `仕様書.md` from office2md (automatic heading numbers, notes, figures with alt text, text
    boxes, links), converts the same file with pandoc (and markitdown) when they are installed,
    folds in the safe fixes by itself (an equation as LaTeX, a bold phrase, a link, each only on
-   an exact single match), and writes `仕様書.review.md`. Its first line is the verdict, followed
-   by one line per check marked ok, FAIL or not run:
+   an exact single match), and writes the review. Only `仕様書.md` and its figures
+   (`仕様書_figures/`) stay in the output folder; everything else (the reference conversions,
+   the printed PDF, the review, `checked.txt`, `rounds.jsonl`) goes to `仕様書_review/` (a name over 48 characters is cut to its first 40 and a short
+   hash, to stay inside Windows' path limit), and files
+   an older version left beside the Markdown move there on the next run. The review,
+   `仕様書_review/review.md`, starts with the verdict, followed by one line per check
+   marked ok, FAIL or not run:
    - Source: the Markdown's `_Source:` line names the file version (SHA-256) it was made from;
      a reused Markdown made from another version fails until regenerated with `--fresh`.
    - Content: every sentence a reference has is in the primary, as many times as the reference
      has it (a specification repeats a rule per case on purpose; losing one repeat is a loss),
      plus links and headings.
+   - Pictures and links: every picture or file the Markdown links to exists, and none is in a
+     format viewers do not show (EMF, WMF, TIFF).
+   - Struck-through text: as many characters are marked `~~...~~` as the document body strikes
+     through (headers, footers and notes are written without marks); pictures: the Markdown shows every picture and drawing the document holds; picture
+     order: pictures sit in the same order as in pandoc's conversion.
+   - Numbering against Word: the number Word shows before each numbered paragraph (its
+     ListString, read while printing) is on the Markdown line holding that paragraph's text.
    - Table shapes: cell counts per table agree.
    - Visual checks: each figure with content, each drawing made of shapes (`drawing<n>`), SmartArt (its text is read in data order, the
      arrows are not), chart and embedded object, and any object the package holds but the text
      does not place. When one needs the page, the document is rendered once to
-     `<stem>_pages/document.pdf` (Word, else LibreOffice). Confirm each in `<stem>.checked`
+     `<stem>_review/pages/document.pdf` (Word, else LibreOffice). Confirm each in `<stem>_review/checked.txt`
      (format below).
    - Diagram syntax of mermaid / PlantUML blocks you added.
-   - Printed text: the document is printed to `<stem>_pages/document.pdf` (Word, else
+   - Printed text: the document is printed to `<stem>_review/pages/document.pdf` (Word, else
      LibreOffice; `--no-render` skips it) and every piece of each page's text must be in the
      Markdown. This is the one reference that is not another converter, so it catches text that
      office2md, pandoc and markitdown all drop. Page headers, footers and page numbers repeated
@@ -101,10 +113,10 @@ on a copy of the file to let Excel/LibreOffice fill them in.
      5): open that page of the PDF beside those lines and compare the structure (heading levels,
      table shape, what a box or a figure says).
    Any listed item that is right as it is (text only in a page footer, a repeat the document
-   has by mistake) is closed with a line `accept <id> <reason>` in `<stem>.checked`; the review
+   has by mistake) is closed with a line `accept <id> <reason>` in `checked.txt`; the review
    prints each item's id. A line without a reason closes nothing, and accepted items are listed
    with their reasons so the report can say what was waived. Each run appends its counts to
-   `<stem>.rounds.jsonl` and the review shows the runs so far, so a round that adds problems is
+   `rounds.jsonl` and the review shows the runs so far, so a round that adds problems is
    visible.
    Listed but not blocking: sentences found under a different heading than in a reference
    (moved, or a heading lost), equations not applied, bold phrases. READY means these checks
@@ -144,7 +156,7 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    editable copy that keeps every position, line, dash and arrowhead, which is the faithful
    version when the reconstruction is in doubt. Charts carry their series values, input rules their
    choices, pictures their size and alt text. Each sheet is rendered to its own PDF
-   (`<stem>_sheets/sheetNN.pdf`, Excel or LibreOffice), and the renders are reused only while the
+   (`<stem>_review/sheets/sheetNN.pdf`, Excel or LibreOffice), and the renders are reused only while the
    workbook is the same version. The review then checks:
    - every text of a sheet (cells, shapes, legacy text boxes, SmartArt, chart titles, rule
      choices, comments, printed header and footer) appears in that sheet's section of the
@@ -158,8 +170,8 @@ on a copy of the file to let Excel/LibreOffice fill them in.
      what was read. Open the rendered PDF for that sheet (the PDF reader shows it as an image;
      extracted pictures in `<stem>_figures/` can be opened directly too), compare, fix the
      Markdown where the reconstruction is wrong or incomplete, describe pictures that carry
-     information, then record it in `<stem>.checked`.
-   `<stem>.checked`: one line per check, starting with its id exactly as the review prints it,
+     information, then record it in `<stem>_review/checked.txt`.
+   `checked.txt` (in `<stem>_review/`, with the review): one line per check, starting with its id exactly as the review prints it,
    for example `シーケンス#diagram@1a2b3c4d  matches the sheet, message 3 relabelled`. The part
    after `@` is a fingerprint of the content you looked at: when the file changes, a changed
    item gets a new id and is shown as "recorded for different content: look again", while

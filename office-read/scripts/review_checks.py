@@ -411,7 +411,8 @@ def xlsx_census(src: Path, data: dict) -> tuple[list[tuple[str, str, str]], list
 
 # -- Word: visual checks and census -------------------------------------------------------------------
 
-def docx_visuals(data: dict, page_pdf: str = "") -> list[tuple[str, str, str]]:
+def docx_visuals(data: dict, page_pdf: str = "", md_dir: str = "") -> list[tuple[str, str, str]]:
+    """md_dir: the Markdown's folder as seen from the review file, put before figure paths."""
     where = f" in {page_pdf}" if page_pdf else " (render the document: office-edit/scripts/pdf_tool.py topdf)"
     items = []
     n: dict[str, int] = {}
@@ -433,7 +434,7 @@ def docx_visuals(data: dict, page_pdf: str = "") -> list[tuple[str, str, str]]:
     drawings = [b for b in data.get("blocks", []) if b.get("kind") == "drawing"]
     for i, b in enumerate(drawings, start=1):
         # a figure drawn with shapes has no picture in the file: only Word's rendering shows it
-        shown = f" (rendered as {b['saved']})" if b.get("saved") else ""
+        shown = f" (rendered as {md_dir}{b['saved']})" if b.get("saved") else ""
         items.append((f"drawing{i}", fingerprint([b.get("text")]),
                       f"Drawing {i}, {b.get('text', 'drawing')}{shown}: compare it with the page{where}. The "
                       "Markdown must show it, as the rendered picture or, where none was made, as a description of "
@@ -441,7 +442,7 @@ def docx_visuals(data: dict, page_pdf: str = "") -> list[tuple[str, str, str]]:
     for i, im in enumerate(data.get("images", []), start=1):
         if im.get("placeholder"):
             continue
-        shown = im.get("saved") or im.get("file") or im.get("name")
+        shown = (md_dir + im["saved"]) if im.get("saved") else (im.get("file") or im.get("name"))
         items.append((f"figure{i}", fingerprint(im),
                       f"Figure {shown}{(' — ' + im['alt']) if im.get('alt') else ' (no alt text)'}: its content is not "
                       "extracted. Open it and describe in the Markdown what it shows that the text does not "
@@ -708,4 +709,165 @@ def print_missing(pages: list[str], md: str) -> list[tuple[str, str, int]]:
                 continue
             seen.add(key)
             out.append((key, raw, n))
+    return out
+
+
+# -- the Markdown's own pictures, links and marks against the file --------------------------------
+
+# formats a Markdown viewer (a browser underneath) does not show
+UNVIEWABLE = (".emf", ".wmf", ".tif", ".tiff")
+_LINK = re.compile(r"(!?)\[(?:[^\[\]\n]|\[[^\[\]\n]{0,300}\]){0,1000}\]\((<[^<>\n]{1,1000}>|[^()\s]{1,1000})(?:\s+\"[^\"\n]{0,300}\")?\)")
+
+
+def local_links(md: str) -> list[tuple[bool, str]]:
+    """(is a picture, target) for every link to a file next to the Markdown, in order."""
+    out = []
+    for m in _LINK.finditer(md):
+        target = m.group(2)
+        if target.startswith("<"):
+            target = target[1:-1]
+        if re.match(r"[a-zA-Z][a-zA-Z0-9+.-]{1,20}:|#", target):       # https:, mailto:, data:, #anchor
+            continue
+        pic = m.group(1) == "!"
+        # [必須](全角) in body text is no link to a file: only a target that looks like a path counts
+        if pic or "/" in target or re.search(r"\.[A-Za-z0-9]{1,5}$", target):
+            out.append((pic, target))
+    return out
+
+
+def link_check(md: str, md_dir: Path) -> dict:
+    """Pictures and file links of the Markdown: which point at nothing, which at a format viewers
+    do not show."""
+    from urllib.parse import unquote
+    broken, unviewable = [], []
+    for _, target in dict.fromkeys(local_links(md)):
+        path = target.split("#", 1)[0]
+        if not path:
+            continue
+        if not (md_dir / unquote(path)).exists() and not (md_dir / path).exists():
+            broken.append(target)
+        elif Path(path).suffix.lower() in UNVIEWABLE:
+            unviewable.append(target)
+    return {"broken": broken, "unviewable": unviewable}
+
+
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+
+def docx_struck_chars(src: Path) -> int:
+    """Characters the document body strikes through by direct formatting, as office2md marks them:
+    not in a tracked deletion (written {--...--}), a ruby, hidden text or a drawing's fallback
+    copy. Headers, footers and notes are left out: office2md writes them as plain text."""
+    from lxml import etree
+    try:
+        z = zipfile.ZipFile(src)
+    except (zipfile.BadZipFile, OSError):
+        return 0
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, huge_tree=False)
+    total = 0
+    with z:
+        parts = [n for n in z.namelist() if n == "word/document.xml"]
+        for name in parts:
+            try:
+                root = etree.fromstring(z.read(name), parser)
+            except (KeyError, etree.XMLSyntaxError):
+                continue
+            for r in root.iter(_W + "r"):
+                rpr = r.find(_W + "rPr")
+                if rpr is None:
+                    continue
+
+                def on(tag: str) -> bool:
+                    el = rpr.find(_W + tag)
+                    return el is not None and (el.get(_W + "val") or "true").lower() not in ("0", "false", "off")
+                if not (on("strike") or on("dstrike")) or on("vanish"):
+                    continue
+                anc, skip = r.getparent(), False
+                while anc is not None:
+                    if anc.tag in (_W + "del", _W + "ruby", _MC_FALLBACK, _W + "moveFrom"):
+                        skip = True
+                        break
+                    anc = anc.getparent()
+                if not skip:
+                    total += len(re.sub(r"\s", "", "".join(t.text or "" for t in r.iter(_W + "t"))))
+    return total
+
+
+def md_struck_chars(md: str) -> int:
+    """Characters inside ~~...~~ and <del>...</del>, spaces, escapes and inline tags left out
+    (a span may run over a line break). Emphasis marks inside count, so an error leans to more."""
+    spans = re.findall(r"~~(.{1,3000}?)~~", md, re.S) + re.findall(r"<del>(.{1,3000}?)</del>", md, re.S)
+    return sum(len(re.sub(r"</?(?:u|em|strong|mark|sup|sub|br)\s{0,3}/?>|\\(?=\S)|\s", "", s)) for s in spans)
+
+
+_FIG_NAME = re.compile(r"figure-(\d{3,4})(?:-\d+)?\.\w+$")
+
+
+def figure_order(md: str, data: dict) -> list[str]:
+    """The package names of the document's pictures in the order the Markdown shows them (office2md
+    saves picture n as figure-00n)."""
+    images = data.get("images", [])
+    out = []
+    for pic, target in local_links(md):
+        m = _FIG_NAME.search(target)
+        if pic and m and 0 < int(m[1]) <= len(images) and images[int(m[1]) - 1].get("file"):
+            out.append(images[int(m[1]) - 1]["file"])
+    return list(dict.fromkeys(out))
+
+
+def pandoc_order(md: str) -> list[str]:
+    """The package names of the pictures in pandoc's Markdown, in order. pandoc keeps
+    media/imageN.ext and writes the extraction folder as given, spaces and all, so the names are
+    read from the path's end rather than through the link syntax."""
+    return list(dict.fromkeys(re.findall(r"[\\/]media[\\/]([\w.-]{1,100}?\.[A-Za-z0-9]{2,5})(?=[)}\s>])", md)))
+
+
+def order_moves(primary: list[str], ref: list[str]) -> list[str]:
+    """Pictures both sides show whose order differs: the ones outside what the two share in the
+    same order, so a single moved picture is named once, not every picture after it. difflib's
+    matching keeps memory linear for a document with thousands of pictures."""
+    import difflib
+    common = set(primary) & set(ref)
+    a = [x for x in primary if x in common]
+    b = [x for x in ref if x in common]
+    if a == b:
+        return []
+    keep = set()
+    for blk in difflib.SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks():
+        keep.update(a[blk.a:blk.a + blk.size])
+    return [x for x in a if x not in keep]
+
+
+def picture_count(md: str) -> int:
+    """Pictures and figure markers in the Markdown: what office2md writes for each picture."""
+    return (sum(1 for pic, _ in local_links(md) if pic)
+            + len(re.findall(r"(?<!!)\[(?:figure|drawing): ", md)))
+
+
+def numbering_misses(numbers: list[tuple], md: str) -> list[tuple[str, str, str]]:
+    """Paragraphs Word numbers (its ListString) whose number the Markdown line lacks. Returns
+    (label, text, the Markdown line). A paragraph whose text is not found is the text check's
+    business; a text found on several lines is fine when one of them carries the number."""
+    import unicodedata
+
+    def n(s: str) -> str:
+        return re.sub(r"[\s\\*_`#>|]|</?\w+[^<>]{0,50}>", "", unicodedata.normalize("NFKC", s))
+    lines = [(n(l), l) for l in md.splitlines() if l.strip()]
+    out = []
+    for row in numbers:
+        label, text = row[0], row[1]
+        if len(row) > 2 and row[2] in ("1", "6"):     # Word's list type: a bullet, a picture bullet
+            continue
+        lab = n(label).rstrip(".")
+        if not re.search(r"[0-9A-Za-zⅰ-ⅿⅠ-Ⅿ①-⑳一二三四五六七八九十ぁ-んァ-ヶｦ-ﾝ]", lab) or re.fullmatch(r"[A-Za-z]", lab):
+            continue                                      # a bullet: a symbol, or a letter in a symbol font
+        key = n(text)[:24]
+        if len(key) < 4:
+            continue
+        hits = [(nl, raw) for nl, raw in lines if key in nl]
+        if not hits:
+            continue
+        if not any(lab in nl[:max(0, nl.find(key))] for nl, _ in hits):
+            out.append((label, text, hits[0][1]))
     return out

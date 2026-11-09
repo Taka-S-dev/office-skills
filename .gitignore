@@ -87,6 +87,10 @@ pwlist*.txt
 *.svg
 *.webp
 
+# md_crosscheck's working folder (reference conversions, renders, the review and its records)
+*_review/
+*.jsonl
+
 # Organisation-specific profiles stay local; only the README and template are published.
 /office-read/profiles/*.md
 !/office-read/profiles/README.md
