@@ -79,12 +79,15 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    boxes, links), converts the same file with pandoc (and markitdown) when they are installed,
    folds in the safe fixes by itself (an equation as LaTeX, a bold phrase, a link, each only on
    an exact single match, and where Word printed the document, Word's own number on a numbered
-   line that has another one), and writes the review. Only `仕様書.md` and its figures
-   (`仕様書_figures/`) stay in the output folder; everything else (the reference conversions,
-   the printed PDF, the review, `checked.txt`, `rounds.jsonl`) goes to `仕様書_review/` (a name over 48 characters is cut to its first 40 and a short
-   hash, to stay inside Windows' path limit), and files
-   an older version left beside the Markdown move there on the next run. The review,
-   `仕様書_review/review.md`, starts with the verdict, followed by one line per check
+   line that has another one), and writes the review. The output folder gets `仕様書.md`, its
+   figures in `figures/仕様書/`, and everything else (the reference conversions, the printed PDF,
+   the review, `checked.txt`, `rounds.jsonl`) in `_review/仕様書/`, so a folder of many documents
+   holds two folders however many there are (a name over 48 characters is cut to its first 40
+   and a short hash, to stay inside Windows' path limit). `_review/` can be deleted once the
+   review is done; the Markdown does not use it, and `_review/README.txt` says so. What an older
+   version left beside the Markdown (`仕様書_review/`, `仕様書_figures/`, loose files) moves in on
+   the next run, and the Markdown's picture paths are rewritten. The review,
+   `_review/仕様書/review.md`, starts with the verdict, followed by one line per check
    marked ok, FAIL or not run:
    - Source: the Markdown's `_Source:` line names the file version (SHA-256) it was made from;
      a reused Markdown made from another version fails until regenerated with `--fresh`.
@@ -102,10 +105,10 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    - Visual checks: each figure with content, each drawing made of shapes (`drawing<n>`), SmartArt (its text is read in data order, the
      arrows are not), chart and embedded object, and any object the package holds but the text
      does not place. When one needs the page, the document is rendered once to
-     `<stem>_review/pages/document.pdf` (Word, else LibreOffice). Confirm each in `<stem>_review/checked.txt`
+     `_review/<stem>/pages/document.pdf` (Word, else LibreOffice). Confirm each in `_review/<stem>/checked.txt`
      (format below).
    - Diagram syntax of mermaid / PlantUML blocks you added.
-   - Printed text: the document is printed to `<stem>_review/pages/document.pdf` (Word, else
+   - Printed text: the document is printed to `_review/<stem>/pages/document.pdf` (Word, else
      LibreOffice; `--no-render` skips it) and every piece of each page's text must be in the
      Markdown. This is the one reference that is not another converter, so it catches text that
      office2md, pandoc and markitdown all drop. Page headers, footers and page numbers repeated
@@ -170,7 +173,7 @@ on a copy of the file to let Excel/LibreOffice fill them in.
    editable copy that keeps every position, line, dash and arrowhead, which is the faithful
    version when the reconstruction is in doubt. Charts carry their series values, input rules their
    choices, pictures their size and alt text. Each sheet is rendered to its own PDF
-   (`<stem>_review/sheets/sheetNN.pdf`, Excel or LibreOffice), and the renders are reused only while the
+   (`_review/<stem>/sheets/sheetNN.pdf`, Excel or LibreOffice), and the renders are reused only while the
    workbook is the same version. The review then checks:
    - every text of a sheet (cells, shapes, legacy text boxes, SmartArt, chart titles, rule
      choices, comments, printed header and footer) appears in that sheet's section of the
@@ -182,10 +185,10 @@ on a copy of the file to let Excel/LibreOffice fill them in.
      so is whatever the package holds that is not read: an object that is not a chart, SmartArt
      or picture, embedded files, newer chart kinds (waterfall, treemap), drawing elements beyond
      what was read. Open the rendered PDF for that sheet (the PDF reader shows it as an image;
-     extracted pictures in `<stem>_figures/` can be opened directly too), compare, fix the
+     extracted pictures in `figures/<stem>/` can be opened directly too), compare, fix the
      Markdown where the reconstruction is wrong or incomplete, describe pictures that carry
-     information, then record it in `<stem>_review/checked.txt`.
-   `checked.txt` (in `<stem>_review/`, with the review): one line per check, starting with its id exactly as the review prints it,
+     information, then record it in `_review/<stem>/checked.txt`.
+   `checked.txt` (in `_review/<stem>/`, with the review): one line per check, starting with its id exactly as the review prints it,
    for example `シーケンス#diagram@1a2b3c4d  matches the sheet, message 3 relabelled`. The part
    after `@` is a fingerprint of the content you looked at: when the file changes, a changed
    item gets a new id and is shown as "recorded for different content: look again", while

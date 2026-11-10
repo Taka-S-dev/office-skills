@@ -59,7 +59,7 @@ def run(corpus: Path, out: Path, render: bool, timeout: int) -> dict:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=timeout)
-            reviews = list(work.glob("*_review/review.md"))
+            reviews = list(work.glob("_review/*/review.md"))
             entry = review_of(reviews[0]) if reviews else {"error": (r.stderr or r.stdout).strip()[-300:]}
         except subprocess.TimeoutExpired:
             entry = {"error": f"timed out after {timeout} s"}

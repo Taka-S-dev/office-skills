@@ -2,8 +2,8 @@
 """Convert a Word file to Markdown with office2md, then cross-check it against pandoc.
 
 Usage:
-    md_crosscheck.py 仕様書.docx                      writes 仕様書.md (and 仕様書_figures/); the references,
-                                                      renders and the review go to 仕様書_review/
+    md_crosscheck.py 仕様書.docx                      writes 仕様書.md (and figures/仕様書/); the references,
+                                                      renders and the review go to _review/仕様書/
     md_crosscheck.py 仕様書.docx --out-dir ./md
     md_crosscheck.py 仕様書.docx --no-markitdown      skip the optional second reference
 
@@ -804,14 +804,75 @@ XLSX_OPTS = dict(outline=False, profile=False, sheet=None, slide=None, max_rows=
                  extract_attachments=None, mail_engine="auto", password=None)
 
 
+REVIEW_ROOT, FIGURES_ROOT = "_review", "figures"
+REVIEW_NOTE = """This folder holds what md_crosscheck used to check the Markdown beside it: the reference
+conversions (pandoc, markitdown), the printed pages, review.md, and per document the record of
+what was confirmed (checked.txt) and of each run (rounds.jsonl).
+
+It can be deleted once the review is finished. The Markdown and its pictures (figures/) do not
+need it. Deleting it earlier loses checked.txt, so the next run asks for every check again.
+"""
+
+
+def short_name(stem: str) -> str:
+    """A document's folder name under _review/ and figures/: a name over 48 characters is cut to
+    its first 40 (pandoc's media folder inside adds about 40 characters to a path Windows caps at
+    260), and a hash keeps two long names with one start apart."""
+    return stem if len(stem) <= 48 else f"{stem[:40]}-{hashlib.sha1(stem.encode('utf-8')).hexdigest()[:6]}"
+
+
+def figures_dir(out_dir: Path, stem: str, md_path: Path) -> Path:
+    """The pictures of one document: <out>/figures/<name>/, so a folder of many documents holds one
+    figures folder however many there are. The <name>_figures/ an older version of this script
+    left beside the Markdown moves in, and the Markdown's links to it are rewritten; only when
+    the Markdown links into it, so a folder of the user's that only shares the name stays."""
+    d = out_dir / FIGURES_ROOT / short_name(stem)
+    old = out_dir / f"{stem}_figures"
+    if old.is_dir() and not d.exists() and md_path.exists():
+        text = md_path.read_text(encoding="utf-8")
+        # a picture link, an HTML picture, or the [figure: path WxH] line of a workbook's Markdown
+        link = re.compile(r"""(\]\(<?|src=["']|\[figure: )""" + re.escape(f"{stem}_figures/"))
+        if link.search(text):
+            d.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                old.replace(d)
+            except OSError:
+                return old                      # keep the old place rather than break the links
+            new = d.relative_to(out_dir).as_posix() + "/"
+            md_path.write_text(link.sub(lambda m: m.group(1) + new, text), encoding="utf-8")
+    return d
+
+
+_OUR_PICTURE = re.compile(r"(figure|drawing)-\d{3,}(-\d+)*\.[A-Za-z]{3,4}")
+
+
+def clear_figures(d: Path) -> None:
+    """Before a fresh conversion: the pictures a previous one wrote, which would otherwise stay and
+    push the new ones to figure-001-1.png. Only the names office2md gives; nothing else in the folder."""
+    if d.is_dir():
+        for p in d.iterdir():
+            if p.is_file() and _OUR_PICTURE.fullmatch(p.name):
+                p.unlink()
+
+
 def review_dir(out_dir: Path, stem: str) -> Path:
     """The folder for everything but the delivered Markdown and its figures: the reference
-    conversions, the renders, the review and its records. What an older version of this script
-    left beside the Markdown moves in (never over a file already there)."""
-    # a long document name is shortened (pandoc's media folder inside adds about 40 characters
-    # to a path Windows caps at 260); the hash keeps two long names with one start apart
-    short = stem if len(stem) <= 48 else f"{stem[:40]}-{hashlib.sha1(stem.encode('utf-8')).hexdigest()[:6]}"
-    d = out_dir / f"{short}_review"
+    conversions, the renders, the review and its records, at <out>/_review/<name>/ so a folder
+    of many documents holds one review folder. What an older version of this script left beside
+    the Markdown (<name>_review/, or loose files before that) moves in, never over a file
+    already there."""
+    root = out_dir / REVIEW_ROOT
+    d = root / short_name(stem)
+    root.mkdir(parents=True, exist_ok=True)
+    note = root / "README.txt"
+    if not note.exists():
+        note.write_text(REVIEW_NOTE, encoding="utf-8")
+    prev = out_dir / f"{short_name(stem)}_review"
+    if prev.is_dir() and not d.exists() and ((prev / "review.md").exists() or (prev / "checked.txt").exists()):
+        try:
+            prev.replace(d)
+        except OSError:
+            pass
     d.mkdir(parents=True, exist_ok=True)
     # short names inside: the document's name twice in one path passes Windows' 260 characters
     moved = {f"{stem}.review.md": "review.md", f"{stem}.checked": "checked.txt",
@@ -956,8 +1017,11 @@ def xlsx_main(src: Path, a) -> int:
     stem = src.stem
     primary_path = out_dir / f"{stem}.md"
     rdir = review_dir(out_dir, stem)
+    fig = figures_dir(out_dir, stem, primary_path)
     fresh = a.fresh or not primary_path.exists()
-    opts = argparse.Namespace(**XLSX_OPTS, uml=a.uml, images=(out_dir / f"{stem}_figures") if fresh else None,
+    if fresh:
+        clear_figures(fig)
+    opts = argparse.Namespace(**XLSX_OPTS, uml=a.uml, images=fig if fresh else None,
                               images_base=out_dir, drawio=out_dir / f"{stem}.drawio")
     h = office2md.HANDLERS[src.suffix.lower()](src, opts)
     data = h.dump()
@@ -1170,8 +1234,11 @@ def word_main(src: Path, a) -> int:
     stem = src.stem
     primary_path = out_dir / f"{stem}.md"
     rdir = review_dir(out_dir, stem)
+    fig = figures_dir(out_dir, stem, primary_path)
     fresh = a.fresh or not primary_path.exists()
-    primary, data = run_office2md(src, primary_path, (out_dir / f"{stem}_figures") if fresh else None, out_dir,
+    if fresh:
+        clear_figures(fig)
+    primary, data = run_office2md(src, primary_path, fig if fresh else None, out_dir,
                                   write=fresh)
     if not fresh:
         # a rerun checks the Markdown as it is now, edits included; --fresh starts over
@@ -1275,9 +1342,9 @@ def main(argv=None) -> int:
     src = a.file
     if not src.exists():
         sys.exit(f"[md_crosscheck] file not found: {src}")
-    # the figures sit at <out>/<name>_figures/figure-001.png: past Windows' 260 characters a
+    # the figures sit at <out>/figures/<name>/figure-001.png: past Windows' 260 characters a
     # deep folder and a long document name fail halfway, so say so before starting
-    longest = (a.out_dir or src.parent).resolve() / f"{src.stem}_figures" / "drawing-0001-1.png"
+    longest = (a.out_dir or src.parent).resolve() / FIGURES_ROOT / short_name(src.stem) / "drawing-0001-1.png"
     if sys.platform == "win32" and len(str(longest)) > 259:
         sys.exit(f"[md_crosscheck] the output path would be {len(str(longest))} characters, past Windows' limit of "
                  "260; pass a shorter --out-dir (or rename the file)")
