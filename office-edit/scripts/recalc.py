@@ -54,7 +54,9 @@ def recalc_excel(path: Path) -> None:
     and a file name cannot inject PowerShell. AutomationSecurity=3 keeps the workbook's macros
     from running: an untrusted file should never get code execution just for being recalculated.
     """
+    # UTF-8 output: Excel's errors are in the user's language (see pdf_tool.cmd_topdf)
     ps = """
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $xl = New-Object -ComObject Excel.Application
 $xl.Visible = $false
@@ -71,10 +73,10 @@ try {
 }
 """
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                       capture_output=True, text=True,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
                        env={**os.environ, "OFFICE_SRC": str(path.resolve())})
     if r.returncode != 0:
-        raise RuntimeError(f"Excel COM failed:\n{r.stderr.strip()}")
+        raise RuntimeError(f"Excel COM failed:\n{(r.stderr or '').strip()}")
 
 
 def recalc_soffice(path: Path, exe: str) -> None:

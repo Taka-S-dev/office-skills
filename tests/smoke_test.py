@@ -762,6 +762,18 @@ def main() -> int:
             o = run(EDIT / "pdf_tool.py", "topdf", docx)
             pdf = docx.with_suffix(".pdf")
             check("topdf produced pdf", pdf.exists(), o)
+            if os.name == "nt" and not have_soffice:
+                # Office refuses a broken file with a message in the user's language: it is shown,
+                # and the script ends with its own error instead of a traceback. In UTF-8 mode, where
+                # a Japanese console message used to fail to decode and leave no stderr at all
+                broken = d / "broken.docx"
+                broken.write_bytes(b"not a document")
+                r = subprocess.run([PY, "-X", "utf8", str(EDIT / "pdf_tool.py"), "topdf", str(broken)],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+                o = (r.stdout or "") + (r.stderr or "")
+                check("topdf shows why Office failed and ends without a traceback",
+                      "Office COM failed: unknown" not in o and "Office COM failed: " in o
+                      and "Traceback" not in o and "no PDF written" in o, o)
             if pdf.exists():
                 o = run(EDIT / "pdf_headings.py", pdf, "--out", d / "toc_auto.txt")
                 check("pdf_headings finds numbered headings and writes toc.txt",

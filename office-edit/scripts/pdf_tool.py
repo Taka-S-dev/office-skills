@@ -251,19 +251,22 @@ try { $app.Visible = $false; $app.DisplayAlerts = $false; $app.AutomationSecurit
     scripts[".ppt"] = scripts[".pptm"] = scripts[".pptx"]
     scripts[".xls"] = scripts[".xlsm"] = scripts[".xlsx"]
     if os.name == "nt" and ext in scripts and a.engine != "soffice":
-        ps = "$ErrorActionPreference = 'Stop'\n" + scripts[ext]
+        # UTF-8 output: Office reports errors in the user's language, which Python cannot decode
+        # in the console's code page and then hands back no stderr at all
+        ps = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n$ErrorActionPreference = 'Stop'\n" + scripts[ext]
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                           capture_output=True, text=True,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
                            env={**os.environ, "OFFICE_SRC": str(src), "OFFICE_OUT": str(out),
                                 "OFFICE_FIT": a.fit})
         if r.returncode == 0 and out.exists():
             print(f"[pdf_tool] wrote {out} (via Office)")
             return
-        err = r.stderr.strip().splitlines()
+        err = [ln.strip() for ln in (r.stderr or "").splitlines() if ln.strip()]
         print(f"[pdf_tool] Office COM failed: {err[0] if err else 'unknown'}; trying LibreOffice")
     so = find_soffice()
     if not so:
-        sys.exit("[pdf_tool] no converter: Office COM unavailable and LibreOffice not found.")
+        sys.exit("[pdf_tool] no PDF written: Office could not convert the file (reason above, if any) "
+                 "and LibreOffice was not found")
     r = subprocess.run([so, "--headless", "--convert-to", "pdf", "--outdir", str(out.parent), str(src)],
                        capture_output=True, text=True, timeout=300)
     produced = out.parent / (src.stem + ".pdf")

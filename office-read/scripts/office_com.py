@@ -21,6 +21,7 @@ from pathlib import Path
 LIMIT_S = 240
 
 _GUARD = """
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $t0 = Get-Date
 $job = Start-Job -ScriptBlock ([scriptblock]::Create($env:OFFICE_SCRIPT))
 if (Wait-Job $job -Timeout LIMIT) { Receive-Job $job 2>$null }
@@ -39,11 +40,14 @@ def run_script(script: str, image: str, env: dict[str, str], limit: int = LIMIT_
     """stdout of the script; 'TIMEOUT' in it when Office had to be stopped."""
     wrapper = _GUARD.replace("LIMIT", str(int(limit))).replace("IMAGE", image)
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", wrapper],
-                       capture_output=True, text=True, timeout=limit + 60,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=limit + 60,
                        env={**os.environ, **env, "OFFICE_SCRIPT": script})
-    if "TIMEOUT" in r.stdout:
+    # UTF-8 output (set above): in the console's code page a Japanese message fails to decode
+    # and Python hands back no stdout at all
+    out = r.stdout or ""
+    if "TIMEOUT" in out:
         print(f"[office] {image.title()} did not answer within {limit} s (a hidden dialog?); stopped it", file=sys.stderr)
-    return r.stdout
+    return out
 
 
 _RELEASE = """

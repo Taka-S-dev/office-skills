@@ -105,6 +105,7 @@ try {
 """
 
 _GUARD_PS = """
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $t0 = Get-Date
 $job = Start-Job -ScriptBlock ([scriptblock]::Create($env:OFFICE_SCRIPT))
 if (Wait-Job $job -Timeout LIMIT) { Receive-Job $job 2>&1 }
@@ -124,16 +125,19 @@ def convert_with_project(src: Path, out_xml: Path) -> str:
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
                             _GUARD_PS.replace("LIMIT", str(PROJECT_LIMIT_S))],
-                           capture_output=True, text=True, timeout=PROJECT_LIMIT_S + 60,
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=PROJECT_LIMIT_S + 60,
                            env={**os.environ, "OFFICE_SCRIPT": _PROJECT_PS,
                                 "OFFICE_SRC": str(src.resolve()), "OFFICE_OUT": str(out_xml.resolve())})
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"Project did not run ({type(e).__name__})"
-    if "TIMEOUT" in r.stdout:
+    # UTF-8 output (set in the guard): Project's errors are in the user's language
+    stdout, stderr = r.stdout or "", r.stderr or ""
+    if "TIMEOUT" in stdout:
         return f"Project did not answer within {PROJECT_LIMIT_S} s (a hidden dialog?); it was stopped"
     if out_xml.exists() and out_xml.stat().st_size > 0:
         return ""
-    last = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()][-1:] or ["no output"]
+    last = [ln for ln in (stdout + stderr).splitlines() if ln.strip()][-1:] or ["no output"]
     return "Project could not export the plan: " + last[0][:300]
 
 
@@ -142,12 +146,13 @@ def convert_with_mpxj(src: Path, out_xml: Path) -> str:
     try:
         r = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--mpxj-convert",
                             str(src.resolve()), str(out_xml.resolve())],
-                           capture_output=True, text=True, timeout=300)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"MPXJ did not finish ({type(e).__name__})"
     if r.returncode == 0 and out_xml.exists() and out_xml.stat().st_size > 0:
         return ""
-    last = [ln for ln in (r.stdout + r.stderr).splitlines() if ln.strip()][-1:] or ["no output"]
+    last = [ln for ln in ((r.stdout or "") + (r.stderr or "")).splitlines() if ln.strip()][-1:] or ["no output"]
     return "MPXJ could not read the plan: " + last[0][:300]
 
 

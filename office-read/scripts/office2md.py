@@ -3289,6 +3289,7 @@ class MsgHandler(MailHandler):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             ps = r"""
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $app = New-Object -ComObject Outlook.Application
 $ns = $app.GetNamespace('MAPI')
@@ -3312,13 +3313,13 @@ $o = @{
   body = [string]$m.Body; attachments = $atts
 }
 $m.Close(1) | Out-Null
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $o | ConvertTo-Json -Depth 4 -Compress
 """
+            # UTF-8 from the first line: an error raised before the JSON is in the user's language
             r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                               capture_output=True, text=True, encoding="utf-8", timeout=120,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
                                env={**os.environ, "OFFICE_SRC": str(self.path.resolve()), "OFFICE_OUT": td})
-            if r.returncode != 0 or not r.stdout.strip():
+            if r.returncode != 0 or not (r.stdout or "").strip():
                 err = (r.stderr or "").strip().splitlines()
                 raise RuntimeError("Outlook COM failed: " + (err[0] if err else "no output"))
             o = _json.loads(r.stdout.strip().splitlines()[-1])
