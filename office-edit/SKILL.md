@@ -1,6 +1,16 @@
 ---
 name: office-edit
-description: Edit, update, fill in, or create Excel, Word and PowerPoint files (.xlsx .xlsm .docx .pptx) safely with openpyxl / python-docx / python-pptx, and do PDF page operations (merge, split, extract, rotate, bookmarks/しおり, convert Office files to PDF) with pypdf, without any proprietary or licensed skill. Use this whenever the user wants an office file changed in any way: replace text or names across a document or deck, update cells or formulas, add rows or a sheet, fill a template, fix a report, bump a fiscal year, rename a company, insert a table or picture, append slides, or produce a new .xlsx/.docx/.pptx deliverable. Also use for Japanese phrasing like "書き換えて", "更新して", "修正して", "差し替えて", "追記して", "作って" when an office file is the target. Covers recalculating formulas and checking for #REF! errors after an edit. For reading only, use office-read instead.
+description: >-
+  Edit, update, fill in, or create Excel, Word and PowerPoint files (.xlsx .xlsm .docx
+  .pptx) safely with openpyxl / python-docx / python-pptx, and do PDF page operations
+  (merge, split, extract, rotate, bookmarks/しおり, convert Office files to PDF) with pypdf,
+  without any proprietary or licensed skill. Use this whenever the user wants an office file
+  changed in any way: replace text or names across a document or deck, update cells or
+  formulas, add rows or a sheet, fill a template, fix a report, bump a fiscal year, rename a
+  company, insert a table or picture, append slides, or produce a new .xlsx/.docx/.pptx
+  deliverable. Also use for Japanese phrasing like "書き換えて", "更新して", "修正して", "差し替えて", "追記して",
+  "作って" when an office file is the target. Covers recalculating formulas and checking for
+  #REF! errors after an edit. For reading only, use office-read instead.
 ---
 
 # office-edit

@@ -45,6 +45,29 @@ def check(name: str, cond: bool, detail: str = ""):
         fails.append(f"{name}: {detail[-500:]}")
 
 
+def skill_frontmatter() -> None:
+    """Each SKILL.md opens with YAML a skill loader can parse: a description written on one line
+    that holds ": " is read as a nested key, and the loader refuses the whole skill."""
+    try:
+        import yaml
+    except ImportError:
+        print("  [skip] PyYAML not installed: SKILL.md frontmatter not parsed")
+        return
+    for name in ("office-read", "office-edit"):
+        text = (ROOT / name / "SKILL.md").read_text(encoding="utf-8")
+        parts = text.split("---\n", 2)
+        try:
+            meta = yaml.safe_load(parts[1]) if len(parts) == 3 and parts[0] == "" else None
+        except yaml.YAMLError as e:
+            meta, err = None, str(e)
+        else:
+            err = "no frontmatter between --- lines"
+        desc = meta.get("description") if isinstance(meta, dict) else None
+        check(f"{name}/SKILL.md frontmatter parses, name matches the folder, description up to 1024 chars",
+              isinstance(desc, str) and 0 < len(desc) <= 1024 and meta.get("name") == name,
+              err if meta is None else str(meta)[:300])
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         d = Path(td)
@@ -52,6 +75,7 @@ def main() -> int:
         xlsx, docx, pptx, csv = d / "sample.xlsx", d / "sample.docx", d / "sample.pptx", d / "sample.csv"
 
         print("office-read")
+        skill_frontmatter()
         o = run(READ, xlsx, "--outline")
         check("xlsx outline lists hidden sheet", "hidden_memo | hidden" in o, o)
         o = run(READ, xlsx, "--sheet", "売上", "--formulas")

@@ -1,6 +1,16 @@
 ---
 name: office-read
-description: Read and extract content from Excel, Word, PowerPoint, PDF, CSV, Visio and Microsoft Project files (.xlsx .xlsm .docx .pptx .pdf .csv .tsv .vsdx .mpp, and the old .xls .doc .ppt) as Markdown or JSON using a bundled script, without any proprietary or licensed skill. Use this whenever the user mentions a spreadsheet, workbook, sheet, Word document, report, slide deck, presentation, PDF, business flow or diagram (Visio), project plan or schedule (MS Project), or references a file with one of those extensions and wants it read, summarized, searched, compared, checked, or turned into something else. Also use when the user asks "what's in this file", "look at this Excel", "確認して", "読んで", "まとめて", "中身を見て" about an office file, even if they don't ask for extraction explicitly. Do not use for creating or editing office files.
+description: >-
+  Read and extract content from Excel, Word, PowerPoint, PDF, CSV, Visio and Microsoft
+  Project files (.xlsx .xlsm .docx .pptx .pdf .csv .tsv .vsdx .mpp, and the old .xls .doc
+  .ppt) as Markdown or JSON using a bundled script, without any proprietary or licensed
+  skill. Use this whenever the user mentions a spreadsheet, workbook, sheet, Word document,
+  report, slide deck, presentation, PDF, business flow or diagram (Visio), project plan or
+  schedule (MS Project), or references a file with one of those extensions and wants it
+  read, summarized, searched, compared, checked, or turned into something else. Also use
+  when the user asks "what's in this file", "look at this Excel", "確認して", "読んで", "まとめて",
+  "中身を見て" about an office file, even if they don't ask for extraction explicitly. Do not use
+  for creating or editing office files.
 ---
 
 # office-read
